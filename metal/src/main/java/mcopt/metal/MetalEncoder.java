@@ -65,6 +65,9 @@ final class MetalEncoder implements CommandEncoderBackend {
 	/** Render encoders opened in this submit; the trace's #numbers, which the GPU profile lines refer to. */
 	private int encoderIndex;
 	private @Nullable MetalRenderPass currentPass;
+	private long[] passColors = new long[0];
+	private long passDepth;
+	private int passWidth, passHeight;
 	/** Recording the current submit's terrain draws for the visibility probe (-Dmcopt.metal.probe=N); null otherwise. */
 	@Nullable MetalProbe probe;
 	/** Summed GPU µs over the profiled frames: whole submit, then vertex and fragment per encoder. */
@@ -306,6 +309,11 @@ final class MetalEncoder implements CommandEncoderBackend {
 				mcopt.metal.cpu.Cpu.PASS_TIMER.begin();
 			}
 			int continued = Native.renderBegin(this.enc, colorCount, colorHandles, clears, depthHandle, clearDepth ? 1 : 0, (float) depthValue, width, height);
+			this.passColors = new long[colorCount];
+			for (int i = 0; i < colorCount; i++) this.passColors[i] = MemoryUtil.memGetAddress(colorHandles + i * 8L);
+			this.passDepth = depthHandle;
+			this.passWidth = width;
+			this.passHeight = height;
 			if (mcopt.metal.cpu.Cpu.PASS_AB) mcopt.metal.cpu.Cpu.PASS_TIMER.end();
 			if (redirect != null) redirect.delegate().begin(this.enc, depthHandle != 0);
 			if (keptDelegate != null) keptDelegate.begin(this.enc, depthHandle != 0);
@@ -331,6 +339,24 @@ final class MetalEncoder implements CommandEncoderBackend {
 		this.currentPass = new MetalPass(this, depth != null, area.x(), area.y(), area.width(), area.height(),
 			redirect != null ? redirect.delegate() : keptDelegate);
 		return this.currentPass;
+	}
+
+	boolean splitPass(java.util.function.Supplier<long @Nullable []> work) {
+		MetalRenderPass pass = this.currentPass;
+		if (pass == null) return false;
+		long[] colors = this.passColors;
+		long depth = this.passDepth;
+		int width = this.passWidth, height = this.passHeight;
+		Native.renderEnd(this.enc);
+		long[] replaced = work.get();
+		if (replaced != null) colors = replaced;
+		MetalBridge.renderBegin(this.enc, colors, null, depth, false, 0, width, height);
+		this.passColors = colors;
+		this.passDepth = depth;
+		this.passWidth = width;
+		this.passHeight = height;
+		pass.resumeAfterSplit();
+		return true;
 	}
 
 	private boolean isAttachment(MetalTexture t, List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors,

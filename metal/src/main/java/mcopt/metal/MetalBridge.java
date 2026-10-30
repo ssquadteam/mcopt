@@ -170,6 +170,10 @@ public final class MetalBridge {
 	}
 
 	/** Forgets a pending clear of texture: about to be overwritten whole. */
+	public static void generateMipmaps(long enc, long texture) {
+		Native.generateMipmaps(enc, texture);
+	}
+
 	public static void dropPendingClear(Object encoder, GpuTexture texture) {
 		((MetalEncoder) encoder).dropPendingClear((MetalTexture) texture);
 	}
@@ -223,5 +227,90 @@ public final class MetalBridge {
 
 	public static void release(long handle) {
 		Native.release(handle);
+	}
+
+	public static @Nullable PipelineInfo pipelineInfo(Object backendPipeline) {
+		return backendPipeline instanceof MetalPipeline p ? p.info : null;
+	}
+
+	public static boolean splitPass(Object encoder, java.util.function.Supplier<long @Nullable []> work) {
+		return ((MetalEncoder) encoder).splitPass(work);
+	}
+
+	public static void index(long enc, long buffer, boolean intIndices) {
+		Native.index(enc, buffer, intIndices ? 1 : 0);
+	}
+
+	public static boolean closed(GpuBuffer buffer) {
+		return buffer.isClosed();
+	}
+
+	public static void endRender(long enc) {
+		Native.renderEnd(enc);
+	}
+
+	public static long library(long ctx, String msl) {
+		long source = MemoryUtil.nmemAlloc(MemoryUtil.memLengthUTF8(msl, true));
+		long err = MemoryUtil.nmemAlloc(8192);
+		try {
+			MemoryUtil.memUTF8(msl, true, MemoryUtil.memByteBuffer(source, MemoryUtil.memLengthUTF8(msl, true)));
+			long lib = Native.libraryNew(ctx, source, err, 8192);
+			if (lib == 0) throw new IllegalStateException(MemoryUtil.memUTF8(err));
+			return lib;
+		} finally {
+			MemoryUtil.nmemFree(source);
+			MemoryUtil.nmemFree(err);
+		}
+	}
+
+	public static long renderPipeline(long ctx, long vlib, String vertexEntry, long flib, String fragmentEntry, int[] description) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long err = stack.nmalloc(1, 4096);
+			long desc = MemoryUtil.memAddress(stack.ints(description));
+			long pso = Native.pipelineNew(ctx, vlib, MemoryUtil.memAddress(stack.UTF8(vertexEntry)), flib, MemoryUtil.memAddress(stack.UTF8(fragmentEntry)), desc, err, 4096);
+			if (pso == 0) throw new IllegalStateException(MemoryUtil.memUTF8(err));
+			return pso;
+		}
+	}
+
+	public static long depthState(long ctx, int compare, boolean write) {
+		return Native.depthStateNew(ctx, compare, write ? 1 : 0);
+	}
+
+	public static long texture(long ctx, int pixelFormat, int width, int height, int mips, int usage) {
+		return Native.textureNew(ctx, pixelFormat, width, height, 1, mips, usage, 0);
+	}
+
+	public static long textureView(long texture, int baseMip, int mips) {
+		return Native.textureView(texture, baseMip, mips);
+	}
+
+	public static long sampler(long ctx, boolean repeat, boolean linear, boolean mipmaps, int anisotropy) {
+		int address = repeat ? 2 : 0, filter = linear ? 1 : 0;
+		return Native.samplerNew(ctx, address, address, filter, filter, mipmaps ? 2 : 0, anisotropy, 1000);
+	}
+
+	public static void bindPipeline(long enc, long pso, long depthState, boolean cull, float biasConstant, float biasSlope, int primitive) {
+		Native.pipeline(enc, pso, depthState, cull ? 1 : 0, 0, biasConstant, biasSlope, primitive);
+	}
+
+	public static void bindTexture(long enc, int slot, long texture, long sampler) {
+		Native.texture(enc, slot, texture, sampler);
+	}
+
+	public static void bindBytes(long enc, int slot, long address, int length) {
+		Native.bytes(enc, slot, address, length);
+	}
+
+	public static void bindBuffer(long enc, int slot, long buffer, long offset) {
+		Native.buffer(enc, slot, buffer, offset);
+	}
+
+	public static void draw(long enc, int vertices, int instances, int first) {
+		Native.draw(enc, vertices, instances, first, 0);
+	}
+
+	public static void upload(long enc, long staging, long stagingOffset, int bytesPerRow, long texture, int width, int height) {
+		Native.blitBufferToTexture(enc, staging, stagingOffset, bytesPerRow, bytesPerRow * height, texture, 0, 0, 0, 0, width, height);
 	}
 }

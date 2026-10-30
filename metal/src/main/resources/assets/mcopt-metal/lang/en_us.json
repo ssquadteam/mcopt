@@ -6,5 +6,11 @@
 	"mcopt.options.frame_generation.tooltip": "The fps counter shows real frames only: they are capped at half your display's refresh rate, and a generated frame is shown between each pair, so motion runs at the full refresh rate. Uses MetalFX frame interpolation with vsync on. Paced keeps the same pacing without generated frames. Not available together with Render Scale.",
 	"mcopt.options.frame_generation.off": "Off",
 	"mcopt.options.frame_generation.on": "On",
-	"mcopt.options.frame_generation.paced": "Paced"
+	"mcopt.options.frame_generation.paced": "Paced",
+	"mcopt.pack.title": "Shader Packs",
+	"mcopt.pack.page": "Shader Packs",
+	"mcopt.pack.apply": "Apply",
+	"mcopt.pack.folder": "Open Folder",
+	"mcopt.pack.off": "Off",
+	"mcopt.pack.active": "%s (active)"
 }

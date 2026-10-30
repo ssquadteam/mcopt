@@ -692,6 +692,10 @@ void mc_blit_texture_to_texture(Enc *enc, id<MTLTexture> src, id<MTLTexture> dst
 		toTexture:dst destinationSlice:0 destinationLevel:mip destinationOrigin:MTLOriginMake(dx, dy, 0)];
 }
 
+void mc_generate_mipmaps(Enc *enc, id<MTLTexture> texture) {
+	[blit(enc) generateMipmapsForTexture:texture];
+}
+
 static int sameTargets(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears, id<MTLTexture> depth) {
 	if (!enc->render || count != enc->colorCount || depth != enc->depth) return 0;
 	for (int i = 0; i < count; i++) {
@@ -895,6 +899,11 @@ id<MTLComputeCommandEncoder> mc_render_suspend(Enc *enc) {
 	@autoreleasepool {
 		return [[cmd(enc) computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent] retain];
 	}
+}
+
+void mc_render_end(Enc *enc) {
+	endRender(enc);
+	endBlit(enc);
 }
 
 void mc_render_resume(Enc *enc, id<MTLComputeCommandEncoder> compute) {

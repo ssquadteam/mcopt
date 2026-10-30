@@ -30,4 +30,13 @@ public interface PassDelegate {
 
 	/** The pass ended. */
 	void end(long enc);
+
+	default void buffer(String name, Object slice) {
+	}
+
+	default void pushConstants(long address, int length) {
+	}
+
+	default void multiDraw(Object vertexBuffer, long vertexOffset, Object indexBuffer, boolean intIndices, long offsets, long counts, long baseVertices, int drawCount) {
+	}
 }

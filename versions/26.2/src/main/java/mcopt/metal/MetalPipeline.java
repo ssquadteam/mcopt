@@ -52,6 +52,7 @@ final class MetalPipeline implements CompiledRenderPipeline {
 	final float depthBiasSlope;
 	final int primitive;
 	final String name;
+	final PipelineInfo info;
 	private final MetalEncoder encoder;
 	private boolean closed;
 
@@ -72,6 +73,36 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		this.depthBiasConstant = depth != null ? depth.depthBiasConstant() : 0;
 		this.depthBiasSlope = depth != null ? depth.depthBiasScaleFactor() : 0;
 		this.primitive = MetalConst.primitive(pipeline.getPrimitiveTopology());
+		this.info = info(pipeline, depthCompare, slots);
+	}
+
+	private static PipelineInfo info(RenderPipeline pipeline, int depthCompare, List<MetalUniform> slots) {
+		List<PipelineInfo.Attrib> attribs = new ArrayList<>();
+		int location = 0;
+		VertexFormat[] buffers = pipeline.getVertexFormatBindings();
+		for (int i = 0; i < buffers.length; i++) {
+			if (buffers[i] == null) continue;
+			for (VertexFormatElement element : buffers[i].getElements()) {
+				attribs.add(new PipelineInfo.Attrib(element.name(), location++, i, element.offset(), element.format().name(), buffers[i].getVertexSize(), buffers[i].getStepRate()));
+			}
+		}
+		DepthStencilState depth = pipeline.getDepthStencilState();
+		ColorTargetState[] targets = pipeline.getColorTargetStates();
+		ColorTargetState target = targets.length == 0 ? null : targets[0];
+		int[] blend = null;
+		int mask = 15;
+		if (target != null) {
+			mask = (target.writeRed() ? 8 : 0) | (target.writeGreen() ? 4 : 0) | (target.writeBlue() ? 2 : 0) | (target.writeAlpha() ? 1 : 0);
+			if (target.blendFunction().isPresent()) {
+				var b = target.blendFunction().get();
+				blend = new int[] {MetalConst.blendFactor(b.color().sourceFactor()), MetalConst.blendFactor(b.color().destFactor()), MetalConst.blendOp(b.color().op()),
+					MetalConst.blendFactor(b.alpha().sourceFactor()), MetalConst.blendFactor(b.alpha().destFactor()), MetalConst.blendOp(b.alpha().op())};
+			}
+		}
+		return new PipelineInfo(pipeline.getLocation().toString(), attribs, slots.stream().map(MetalUniform::name).toList(),
+			MetalConst.topologyClass(pipeline.getPrimitiveTopology()), MetalConst.primitive(pipeline.getPrimitiveTopology()), pipeline.isCull(),
+			pipeline.getPolygonMode() == PolygonMode.WIREFRAME, depth != null, depthCompare, depth != null && depth.writeDepth(),
+			depth != null ? depth.depthBiasConstant() : 0, depth != null ? depth.depthBiasScaleFactor() : 0, blend, mask);
 	}
 
 	@Override

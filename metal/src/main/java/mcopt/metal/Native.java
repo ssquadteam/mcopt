@@ -65,6 +65,7 @@ final class Native {
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle BLIT_TEXTURE_TO_BUFFER = fn("mc_blit_texture_to_buffer", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle GENERATE_MIPMAPS = fn("mc_generate_mipmaps", false, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle BLIT_TEXTURE_TO_TEXTURE = fn("mc_blit_texture_to_texture", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle RENDER_BEGIN = fn("mc_render_begin", false, JAVA_INT,
@@ -88,6 +89,7 @@ final class Native {
 	private static final MethodHandle OCC_CULL = fn("mc_occ_cull", true, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RENDER_RESUME = fn("mc_render_resume", false, null, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle RENDER_END = fn("mc_render_end", false, null, JAVA_LONG);
 	private static final MethodHandle CLOUDS_CULL = fn("mc_clouds_cull", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle R_DRAW = fn("mc_r_draw", true, null, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
@@ -188,6 +190,7 @@ final class Native {
 	static void fillBuffer(long enc, long buffer, long offset, long length, int value) { try { BLIT_FILL.invokeExact(enc, buffer, offset, length, value); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitBufferToTexture(long enc, long src, long off, int bytesPerRow, int bytesPerImage, long dst, int slice, int mip, int x, int y, int w, int h) { try { BLIT_BUFFER_TO_TEXTURE.invokeExact(enc, src, off, bytesPerRow, bytesPerImage, dst, slice, mip, x, y, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToBuffer(long enc, long src, int mip, int x, int y, int w, int h, long dst, long off, int bytesPerRow) { try { BLIT_TEXTURE_TO_BUFFER.invokeExact(enc, src, mip, x, y, w, h, dst, off, bytesPerRow); } catch (Throwable t) { throw rethrow(t); } }
+	static void generateMipmaps(long enc, long texture) { try { GENERATE_MIPMAPS.invokeExact(enc, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToTexture(long enc, long src, long dst, int mip, int dx, int dy, int sx, int sy, int w, int h) { try { BLIT_TEXTURE_TO_TEXTURE.invokeExact(enc, src, dst, mip, dx, dy, sx, sy, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	/** 0: opened a new render encoder; 1: continued the open one (same attachments); 2: continued it after clearing depth in place. */
 	static int renderBegin(long enc, int count, long colors, long clears, long depth, int clearDepth, float depthValue, int w, int h) { try { return (int) RENDER_BEGIN.invokeExact(enc, count, colors, clears, depth, clearDepth, depthValue, w, h); } catch (Throwable t) { throw rethrow(t); } }
@@ -220,6 +223,7 @@ final class Native {
 				arenaCount, frame, work, offsets);
 		} catch (Throwable t) { throw rethrow(t); }
 	}
+	static void renderEnd(long enc) { try { RENDER_END.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 	static void renderResume(long enc, long compute) { try { RENDER_RESUME.invokeExact(enc, compute); } catch (Throwable t) { throw rethrow(t); } }
 	static void cloudsCull(long enc, long terrain, long faces, long facesOffset, int count, long modelView, long modelViewOffset, long proj, long projOffset,
 		long info, long infoOffset, long out, long keptOffset) {

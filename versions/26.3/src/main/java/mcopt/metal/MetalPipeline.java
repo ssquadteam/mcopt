@@ -31,6 +31,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 	final float depthBiasSlope;
 	final int primitive;
 	final String name;
+	final PipelineInfo info;
 	/** MTLCompareFunction of depthState, for MetalProbe. */
 	final int depthCompare;
 	/** Sodium solid/cutout terrain only, with MetalTerrain on: the same pipeline fetching its own vertices; 0 otherwise. */
@@ -58,6 +59,41 @@ final class MetalPipeline implements BackendRenderPipeline {
 		this.depthBiasConstant = depth != null ? depth.depthBiasConstant() : 0;
 		this.depthBiasSlope = depth != null ? depth.depthBiasScaleFactor() : 0;
 		this.primitive = MetalConst.primitive(info.primitiveTopology());
+		this.info = info(info, depthCompare);
+	}
+
+	private static PipelineInfo info(CreateInfo info, int depthCompare) {
+		Map<Integer, String> names = new java.util.HashMap<>();
+		try {
+			var module = shader(info, ShaderType.VERTEX).module();
+			var reflection = module.getReflectionInfoIfAvailable();
+			if (reflection == null) reflection = module.reflect();
+			for (var input : reflection.inputs()) names.put(input.location(), input.name());
+		} catch (Exception e) {
+			names.clear();
+		}
+		List<PipelineInfo.Attrib> attribs = new java.util.ArrayList<>();
+		for (CreateInfo.AttribBinding a : info.attribBindings()) {
+			CreateInfo.VertexBuffer vb = info.vertexBuffers().stream().filter(b -> b.bufferSlot() == a.bufferSlot()).findFirst().orElse(null);
+			attribs.add(new PipelineInfo.Attrib(names.getOrDefault(a.location(), ""), a.location(), a.bufferSlot(), a.offset(), a.format().name(),
+				vb == null ? 0 : vb.stride(), vb == null ? 0 : vb.stepRate()));
+		}
+		DepthStencilState depth = info.depthStencilState();
+		ColorTargetState target = info.colorTargetStates().isEmpty() ? null : info.colorTargetStates().getFirst();
+		int[] blend = null;
+		int mask = 15;
+		if (target != null) {
+			mask = (target.writeRed() ? 8 : 0) | (target.writeGreen() ? 4 : 0) | (target.writeBlue() ? 2 : 0) | (target.writeAlpha() ? 1 : 0);
+			if (target.blendFunction().isPresent()) {
+				var b = target.blendFunction().get();
+				blend = new int[] {MetalConst.blendFactor(b.color().sourceFactor()), MetalConst.blendFactor(b.color().destFactor()), MetalConst.blendOp(b.color().op()),
+					MetalConst.blendFactor(b.alpha().sourceFactor()), MetalConst.blendFactor(b.alpha().destFactor()), MetalConst.blendOp(b.alpha().op())};
+			}
+		}
+		return new PipelineInfo(info.name(), attribs, info.uniforms().stream().map(BindGroupLayout.UniformDescription::name).toList(),
+			MetalConst.topologyClass(info.primitiveTopology()), MetalConst.primitive(info.primitiveTopology()), info.cull(), info.polygonMode() == PolygonMode.WIREFRAME,
+			depth != null, depthCompare, depth != null && depth.writeDepth(), depth != null ? depth.depthBiasConstant() : 0, depth != null ? depth.depthBiasScaleFactor() : 0,
+			blend, mask);
 	}
 
 	static Map<String, Object> compileStats() {

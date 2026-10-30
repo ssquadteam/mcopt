@@ -43,6 +43,7 @@ abstract class MetalRenderPass implements RenderPassBackend {
 	private @Nullable MetalPipeline recording;
 	/** The frontend's index buffer, restored after MetalTerrain draws with its own. */
 	private long indexHandle;
+	private @Nullable GpuBuffer indexBuffer;
 	private int indexInt;
 	/** What the frontend set in the encoder besides uniforms, for MetalTerrain.OCC to put back after it splits the pass. */
 	private final int[] scissor = new int[4];
@@ -114,6 +115,19 @@ abstract class MetalRenderPass implements RenderPassBackend {
 			return;
 		}
 		Native.pipeline(this.enc, this.hasDepth ? p.withDepth : p.withoutDepth, p.depthState, p.cull ? 1 : 0, p.wireframe ? 1 : 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
+	}
+
+	void resumeAfterSplit() {
+		MetalPipeline p = this.pipeline;
+		if (p == null) return;
+		if (this.delegate != null) {
+			this.delegate.begin(this.enc, this.hasDepth);
+			this.slots = this.delegate.setPipeline(this.enc, p, p.uniforms);
+		} else {
+			Native.pipeline(this.enc, this.hasDepth ? p.withDepth : p.withoutDepth, p.depthState, p.cull ? 1 : 0, p.wireframe ? 1 : 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
+		}
+		if (this.indexHandle != 0) Native.index(this.enc, this.indexHandle, this.indexInt);
+		this.rebind();
 	}
 
 	/** Called by the encoder when the frontend ends the pass. */
@@ -190,7 +204,8 @@ abstract class MetalRenderPass implements RenderPassBackend {
 			return;
 		}
 		Native.bytes(this.enc, MetalConst.PUSH_CONSTANTS_INDEX, address, length);
-		if (MetalTerrain.OCC && length <= this.pushConstants.length) {
+		if (this.delegate != null) this.delegate.pushConstants(address, length);
+		if ((MetalTerrain.OCC || this.delegate != null) && length <= this.pushConstants.length) {
 			this.pushConstantsLength = length;
 			MemoryUtil.memByteBuffer(address, length).get(0, this.pushConstants, 0, length);
 		}
@@ -222,6 +237,7 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void setIndexBuffer(GpuBuffer indexBuffer, IndexType indexType) {
+		this.indexBuffer = indexBuffer;
 		this.indexHandle = this.encoder.use(indexBuffer).handle;
 		this.indexInt = indexType == IndexType.INT ? 1 : 0;
 		Native.index(this.enc, this.indexHandle, this.indexInt);
@@ -251,6 +267,7 @@ abstract class MetalRenderPass implements RenderPassBackend {
 			case UNIFORM_BUFFER -> {
 				GpuBufferSlice slice = (GpuBufferSlice) value;
 				Native.buffer(this.enc, i, this.encoder.use(slice.buffer()).handle, slice.offset());
+				if (this.delegate != null) this.delegate.buffer(uniform.name(), slice);
 			}
 			case SAMPLED_IMAGE -> {
 				MetalUniform.Texture ts = (MetalUniform.Texture) value;
@@ -320,6 +337,10 @@ abstract class MetalRenderPass implements RenderPassBackend {
 		}
 		Native.multiDrawIndexedSeparate(this.enc, MemoryUtil.memAddress(firstIndexOffsets), MemoryUtil.memAddress(indexCounts),
 			MemoryUtil.memAddress(vertexOffsets), drawCount);
+		if (this.delegate != null && this.vertexBuffer0 != null && this.indexBuffer != null) {
+			this.delegate.multiDraw(this.vertexBuffer0.buffer(), this.vertexBuffer0.offset(), this.indexBuffer, this.indexInt == 1, MemoryUtil.memAddress(firstIndexOffsets),
+				MemoryUtil.memAddress(indexCounts), MemoryUtil.memAddress(vertexOffsets), drawCount);
+		}
 	}
 
 	/** Hands Sodium's terrain draws to the visibility probe; its compact vertex format is what mcprobe.m decodes. */
