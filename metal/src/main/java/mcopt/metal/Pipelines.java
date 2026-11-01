@@ -82,9 +82,9 @@ final class Pipelines {
 				f = new Translated("// " + UNCACHED_NONCE + "\n" + f.msl(), f.entry());
 			}
 			t1 = System.nanoTime();
-			vlib = Native.libraryNew(ctx, MemoryUtil.memAddress(stack.UTF8(v.msl())), err, 4096);
+			vlib = library(ctx, v.msl(), err);
 			if (vlib == 0) throw new IllegalStateException(name + " vertex: " + MemoryUtil.memUTF8(err) + "\n" + v.msl());
-			flib = Native.libraryNew(ctx, MemoryUtil.memAddress(stack.UTF8(f.msl())), err, 4096);
+			flib = library(ctx, f.msl(), err);
 			if (flib == 0) throw new IllegalStateException(name + " fragment: " + MemoryUtil.memUTF8(err) + "\n" + f.msl());
 			t2 = System.nanoTime();
 			long vname = MemoryUtil.memAddress(stack.UTF8(v.entry())), fname = MemoryUtil.memAddress(stack.UTF8(f.entry()));
@@ -99,7 +99,7 @@ final class Pipelines {
 			if (defines != null && MetalTerrain.OCC && !name.contains("translucent")) {
 				// Translucent stays on Sodium's own draws: its quads are drawn in sorted index-buffer order.
 				String twin = "#define PULLED\n" + resource("sodium_terrain.vs.metal");
-				plib = Native.libraryNew(ctx, MemoryUtil.memAddress(stack.UTF8(twin)), err, 4096);
+				plib = library(ctx, twin, err);
 				if (plib == 0) throw new IllegalStateException(name + " pulled vertex: " + MemoryUtil.memUTF8(err));
 				pulled = Native.pipelineNew(ctx, plib, vname, flib, fname, describe.describe(stack, true, false), err, 4096);
 				if (pulled == 0) throw new IllegalStateException(name + " pulled: " + MemoryUtil.memUTF8(err));
@@ -118,6 +118,15 @@ final class Pipelines {
 				libraryNs += t2 - t1;
 				stateNs += t3 - t2;
 			}
+		}
+	}
+
+	private static long library(long ctx, String msl, long err) {
+		ByteBuffer src = MemoryUtil.memUTF8(msl);
+		try {
+			return Native.libraryNew(ctx, MemoryUtil.memAddress(src), err, 4096);
+		} finally {
+			MemoryUtil.memFree(src);
 		}
 	}
 
