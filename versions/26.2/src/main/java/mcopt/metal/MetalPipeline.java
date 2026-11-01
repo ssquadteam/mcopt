@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.resources.Identifier;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
@@ -46,6 +47,7 @@ final class MetalPipeline implements CompiledRenderPipeline {
 	final long pulled;
 	final int depthCompare;
 	final Map<String, Integer> slotIndex = new HashMap<>();
+	final Map<String, String> aliases;
 	final boolean cull;
 	final boolean wireframe;
 	final float depthBiasConstant;
@@ -56,8 +58,9 @@ final class MetalPipeline implements CompiledRenderPipeline {
 	private final MetalEncoder encoder;
 	private boolean closed;
 
-	private MetalPipeline(MetalEncoder encoder, RenderPipeline pipeline, long withDepth, long withoutDepth, long pulled, long depthState, int depthCompare, List<MetalUniform> slots) {
+	private MetalPipeline(MetalEncoder encoder, RenderPipeline pipeline, long withDepth, long withoutDepth, long pulled, long depthState, int depthCompare, List<MetalUniform> slots, Map<String, String> aliases) {
 		this.encoder = encoder;
+		this.aliases = aliases;
 		this.withDepth = withDepth;
 		this.withoutDepth = withoutDepth;
 		this.pulled = pulled;
@@ -111,7 +114,7 @@ final class MetalPipeline implements CompiledRenderPipeline {
 	}
 
 	static MetalPipeline invalid(MetalEncoder encoder, RenderPipeline pipeline) {
-		return new MetalPipeline(encoder, pipeline, 0, 0, 0, 0, 7, List.of());
+		return new MetalPipeline(encoder, pipeline, 0, 0, 0, 0, 7, List.of(), Map.of());
 	}
 
 	static synchronized MetalPipeline compile(MetalEncoder encoder, RenderPipeline pipeline, ShaderSource source) {
@@ -121,8 +124,9 @@ final class MetalPipeline implements CompiledRenderPipeline {
 			vertex = module(source, pipeline, pipeline.getVertexShader(), ShaderType.VERTEX);
 			fragment = module(source, pipeline, pipeline.getFragmentShader(), ShaderType.FRAGMENT);
 			List<MetalUniform> slots = new ArrayList<>();
-			addSlots(slots, vertex, pipeline);
-			addSlots(slots, fragment, pipeline);
+			Map<String, String> aliases = new HashMap<>();
+			addSlots(slots, aliases, vertex, pipeline);
+			addSlots(slots, aliases, fragment, pipeline);
 			String name = pipeline.getLocation().toString();
 			if (Pipelines.builtinTerrain(name)) slots.sort(java.util.Comparator.comparingInt(u -> TERRAIN_SLOTS.indexOf(u.name())));
 			List<VulkanBindGroupLayout.Entry> entries = new ArrayList<>();
@@ -145,7 +149,7 @@ final class MetalPipeline implements CompiledRenderPipeline {
 			DepthStencilState depth = pipeline.getDepthStencilState();
 			Pipelines.Handles h = Pipelines.build(encoder, name, vertex.spirv(), fragment.spirv(), slots.size(), (stack, hasDepth, vertexInput) -> describe(stack, pipeline, hasDepth, vertexInput),
 				depth != null, depth == null ? 7 : MetalConst.compare(depth.depthTest()), depth != null && depth.writeDepth());
-			return new MetalPipeline(encoder, pipeline, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), slots);
+			return new MetalPipeline(encoder, pipeline, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), slots, aliases);
 		} catch (ShaderCompileException | IllegalStateException e) {
 			LOGGER.error("Couldn't compile pipeline {}: {}", pipeline.getLocation(), e.getMessage());
 			return invalid(encoder, pipeline);
@@ -194,17 +198,25 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		return null;
 	}
 
-	private static void addSlots(List<MetalUniform> slots, IntermediaryShaderModule shader, RenderPipeline pipeline) throws ShaderCompileException {
+	private static final Set<String> DEFAULT_UNIFORMS = Set.of("Projection", "Lighting", "Fog", "Globals");
+
+	private static void addSlots(List<MetalUniform> slots, Map<String, String> aliases, IntermediaryShaderModule shader, RenderPipeline pipeline) throws ShaderCompileException {
 		List<BindGroupLayout.UniformDescription> uniforms = BindGroupLayout.flattenUniforms(pipeline.getBindGroupLayouts());
+		List<String> samplers = BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts());
 		for (SpvUniformBuffer buffer : shader.uniformBuffers()) {
-			if (uniforms.stream().noneMatch(d -> d.name().equals(buffer.name()))) throw new ShaderCompileException("Unable to find shader defined uniform (" + buffer.name() + ")");
+			if (uniforms.stream().noneMatch(d -> d.name().equals(buffer.name())) && !DEFAULT_UNIFORMS.contains(buffer.name())) {
+				throw new ShaderCompileException("Unable to find shader defined uniform (" + buffer.name() + ")");
+			}
 			if (slots.stream().noneMatch(s -> s.kind() == MetalUniform.Kind.UNIFORM_BUFFER && s.name().equals(buffer.name()))) slots.add(new MetalUniform(buffer.name(), MetalUniform.Kind.UNIFORM_BUFFER, null));
 		}
 		for (SpvSampler sampler : shader.samplers()) {
 			var texel = uniforms.stream().filter(d -> d.name().equals(sampler.name())).findFirst();
 			MetalUniform.Kind kind = texel.isPresent() ? MetalUniform.Kind.TEXEL_BUFFER : MetalUniform.Kind.SAMPLED_IMAGE;
-			if (texel.isEmpty() && !BindGroupLayout.flattenSamplers(pipeline.getBindGroupLayouts()).contains(sampler.name())) {
-				throw new ShaderCompileException("Unable to find shader defined uniform (" + sampler.name() + ")");
+			if (texel.isEmpty() && !samplers.contains(sampler.name())) {
+				if (samplers.isEmpty()) throw new ShaderCompileException("Unable to find shader defined uniform (" + sampler.name() + ")");
+				if (aliases.put(sampler.name(), samplers.getFirst()) == null) {
+					LOGGER.warn("{} samples {}, which the pipeline does not define; reading {} instead", pipeline.getLocation(), sampler.name(), samplers.getFirst());
+				}
 			}
 			if (slots.stream().noneMatch(s -> s.kind() == kind && s.name().equals(sampler.name()))) {
 				slots.add(new MetalUniform(sampler.name(), kind, texel.map(BindGroupLayout.UniformDescription::gpuFormat).orElse(null)));

@@ -25,7 +25,8 @@ final class MetalPass extends MetalRenderPass {
 		this.setMetalPipeline(p.isValid() ? p : null);
 		if (this.pipeline == null) return;
 		for (int i = 0; i < p.slots.size(); i++) {
-			Object value = this.values.get(p.slots.get(i).name());
+			String name = p.slots.get(i).name();
+			Object value = this.values.get(p.aliases.getOrDefault(name, name));
 			if (value != null) this.setUniformAt(i, value);
 		}
 	}
@@ -36,6 +37,9 @@ final class MetalPass extends MetalRenderPass {
 		if (p == null) return;
 		Integer index = p.slotIndex.get(name);
 		if (index != null) this.setUniformAt(index, value);
+		for (Map.Entry<String, String> alias : p.aliases.entrySet()) {
+			if (alias.getValue().equals(name)) this.setUniformAt(p.slotIndex.get(alias.getKey()), value);
+		}
 	}
 
 	@Override
