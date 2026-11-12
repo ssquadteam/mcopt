@@ -5,9 +5,11 @@
 #import "mcmetal.h"
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
+#import <IOSurface/IOSurface.h>
 #import <MetalFX/MetalFX.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
+#import <QuartzCore/CATransaction.h>
 #include <mach/mach_time.h>
 #include <sys/event.h>
 #include <math.h>
@@ -34,6 +36,10 @@ static NSString *presentSource = @
 	"}\n"
 	"fragment float4 present_fs(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
 	"  return t.sample(s, v.uv);\n"
+	"}\n"
+	// The mailbox presents through a plain CALayer, which (unlike the opaque CAMetalLayer) would blend a sub-1 alpha with the window
+	"fragment float4 present_opaque_fs(V v [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]]) {\n"
+	"  return float4(t.sample(s, v.uv).rgb, 1.0);\n"
 	"}\n"
 	"struct Clear { float4 color; float depth; };\n"
 	"vertex float4 clear_vs(uint id [[vertex_id]], constant Clear &c [[buffer(0)]]) {\n"
@@ -1129,11 +1135,33 @@ static CVReturn onRefresh(CVDisplayLinkRef link, const CVTimeStamp *now, const C
 	return kCVReturnSuccess;
 }
 
+static CVDisplayLinkRef paceLink;
+static CGDirectDisplayID paceDisplay;
+static NSWindow *gameWindow; // set by mc_layer_attach; the render thread is the main thread on macOS, so AppKit reads are safe there
+
+static CGDirectDisplayID windowDisplay(void) {
+	NSScreen *screen = gameWindow ? gameWindow.screen : nil;
+	NSNumber *n = screen ? screen.deviceDescription[@"NSScreenNumber"] : nil;
+	return n ? (CGDirectDisplayID) n.unsignedIntValue : CGMainDisplayID();
+}
+
 static void startDisplayLink(void) {
-	CVDisplayLinkRef link;
-	if (CVDisplayLinkCreateWithCGDisplay(CGMainDisplayID(), &link) != kCVReturnSuccess) return;
-	CVDisplayLinkSetOutputCallback(link, onRefresh, NULL);
-	CVDisplayLinkStart(link); // runs for the life of the process
+	paceDisplay = windowDisplay();
+	if (CVDisplayLinkCreateWithCGDisplay(paceDisplay, &paceLink) != kCVReturnSuccess) { paceLink = NULL; return; }
+	CVDisplayLinkSetOutputCallback(paceLink, onRefresh, NULL);
+	CVDisplayLinkStart(paceLink); // runs for the life of the process
+}
+
+static void followWindowDisplay(void) {
+	static double checkedAt;
+	double now = CACurrentMediaTime();
+	if (!paceLink || now - checkedAt < 0.25) return;
+	checkedAt = now;
+	CGDirectDisplayID d = windowDisplay();
+	if (d == paceDisplay) return;
+	paceDisplay = d;
+	CVDisplayLinkSetCurrentCGDisplay(paceLink, d);
+	refreshPeriod = 0; // until the new display's first callback: present everything
 }
 #pragma clang diagnostic pop
 
@@ -1172,6 +1200,7 @@ int mc_pace(double margin) {
 		started = 1;
 		startDisplayLink();
 	}
+	followWindowDisplay();
 	double now = CACurrentMediaTime(), anchor = nextRefresh, period = refreshPeriod, lead = gpuLatency + margin + paceExtra;
 	if (lastPace > 0) frameInterval += (now - lastPace - frameInterval) * 0.1;
 	lastPace = now;
@@ -1210,6 +1239,7 @@ CAMetalLayer *mc_layer_attach(NSWindow *window) {
 		NSView *view = [window contentView];
 		CAMetalLayer *layer = [[CAMetalLayer alloc] init];
 		layer.contentsScale = [window backingScaleFactor];
+		gameWindow = window;
 		[view setLayer:layer];
 		[view setWantsLayer:YES];
 		return layer;
@@ -1237,6 +1267,200 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 		[cmd(enc) presentDrawable:drawable];
 	}
 }
+
+// ---- mailbox present (vsync off; -Dmcopt.metal.mailbox=false for the paced present) ----
+// Idea: Slipstream (rdh), via Polyfrost/Polydium#23. Each frame is drawn into a free IOSurface that becomes the contents of a
+// plain CALayer over the CAMetalLayer once its GPU work completes. A surface is reused only once it was replaced on screen and
+// WindowServer no longer holds it; if none is free the present is skipped. mbShow runs in completion handlers, under mbLock.
+#define MB_MAX 8
+enum { MB_FREE, MB_PENDING, MB_SHOWN };
+typedef struct MbSet {
+	int w, h, n, retired;
+	IOSurfaceRef surf[MB_MAX];
+	id<MTLTexture> tex[MB_MAX];
+	_Atomic int state[MB_MAX];
+} MbSet;
+static CALayer *mbLayer;
+static CAMetalLayer *mbParent;
+static id<MTLRenderPipelineState> mbPipeline;
+static MbSet *mbSet;               // the set frames are drawn into now (render thread)
+static MbSet *mbShownSet;          // the set of the surface on screen (mbLock)
+static int mbShownSlot = -1;
+static uint64_t mbSeq, mbShownSeq; // frame order: a late completion never replaces a newer frame
+static int mbEnabled, mbSlots = 4, mbNext;
+static os_unfair_lock mbLock = OS_UNFAIR_LOCK_INIT;
+static _Atomic long mbSkipped, mbShownCount;
+
+// Frees a replaced set once nothing uses it: not on screen and no frame of it still on the GPU. Under mbLock.
+static void mbMaybeFree(MbSet *s) {
+	if (!s || !s->retired || s == mbShownSet || s == mbSet) return;
+	for (int i = 0; i < s->n; i++) if (atomic_load(&s->state[i]) == MB_PENDING) return;
+	for (int i = 0; i < s->n; i++) {
+		[s->tex[i] release];
+		CFRelease(s->surf[i]); // the layer's contents retains the surface it shows
+	}
+	free(s);
+}
+
+static MbSet *mbAllocate(id<MTLDevice> device, int w, int h) {
+	MbSet *s = calloc(1, sizeof(MbSet));
+	s->w = w;
+	s->h = h;
+	@autoreleasepool {
+		NSDictionary *props = @{
+			(id) kIOSurfaceWidth: @(w), (id) kIOSurfaceHeight: @(h), (id) kIOSurfaceBytesPerElement: @4,
+			(id) kIOSurfacePixelFormat: @((uint32_t) 'BGRA'),
+		};
+		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+		d.usage = MTLTextureUsageRenderTarget;
+		d.storageMode = MTLStorageModeShared;
+		for (int i = 0; i < mbSlots; i++) {
+			IOSurfaceRef surf = IOSurfaceCreate((CFDictionaryRef) props);
+			id<MTLTexture> tex = surf ? [device newTextureWithDescriptor:d iosurface:surf plane:0] : nil;
+			if (!tex) {
+				if (surf) CFRelease(surf);
+				break;
+			}
+			s->surf[s->n] = surf;
+			s->tex[s->n] = tex;
+			s->n++;
+		}
+	}
+	return s;
+}
+
+static void mbShow(MbSet *s, int slot, uint64_t seq) {
+	os_unfair_lock_lock(&mbLock);
+	if (mbEnabled && mbLayer && seq > mbShownSeq) {
+		[CATransaction begin];
+		[CATransaction setDisableActions:YES];
+		CGRect bounds = mbParent.bounds;
+		if (!CGRectEqualToRect(mbLayer.frame, bounds)) mbLayer.frame = bounds;
+		mbLayer.contents = (id) s->surf[slot];
+		mbLayer.hidden = NO;
+		[CATransaction commit];
+		MbSet *prev = mbShownSet;
+		int prevSlot = mbShownSlot;
+		mbShownSet = s;
+		mbShownSlot = slot;
+		mbShownSeq = seq;
+		atomic_store(&s->state[slot], MB_SHOWN);
+		if (prev) {
+			atomic_store(&prev->state[prevSlot], MB_FREE);
+			if (prev != s) mbMaybeFree(prev);
+		}
+		atomic_fetch_add(&mbShownCount, 1);
+	} else {
+		atomic_store(&s->state[slot], MB_FREE);
+	}
+	mbMaybeFree(s);
+	os_unfair_lock_unlock(&mbLock);
+}
+
+void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots) {
+	@autoreleasepool {
+		os_unfair_lock_lock(&mbLock);
+		if (on && !mbLayer) {
+			mbParent = layer;
+			mbLayer = [[CALayer alloc] init];
+			mbLayer.opaque = YES;
+			mbLayer.contentsGravity = kCAGravityResize;
+			mbLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+			mbLayer.frame = layer.bounds;
+			mbLayer.hidden = YES; // until its first frame, so switching over never flashes an empty layer
+			[CATransaction begin];
+			[CATransaction setDisableActions:YES];
+			[layer addSublayer:mbLayer];
+			[CATransaction commit];
+		}
+		if (on && !mbPipeline) {
+			NSError *e = nil;
+			MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
+			pd.vertexFunction = [[ctx->builtins newFunctionWithName:@"present_vs"] autorelease];
+			pd.fragmentFunction = [[ctx->builtins newFunctionWithName:@"present_opaque_fs"] autorelease];
+			pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+			mbPipeline = [ctx->device newRenderPipelineStateWithDescriptor:pd error:&e];
+			if (!mbPipeline) NSLog(@"[mcopt] mailbox: no pipeline: %@", e);
+		}
+		if (slots >= 2 && slots <= MB_MAX) mbSlots = slots;
+		mbEnabled = on && mbPipeline != nil;
+		if (!mbEnabled && mbLayer) {
+			[CATransaction begin];
+			[CATransaction setDisableActions:YES];
+			mbLayer.hidden = YES;
+			mbLayer.contents = nil;
+			[CATransaction commit];
+			if (mbShownSet) {
+				MbSet *prev = mbShownSet;
+				atomic_store(&prev->state[mbShownSlot], MB_FREE);
+				mbShownSet = NULL;
+				mbShownSlot = -1;
+				mbMaybeFree(prev);
+			}
+		}
+		os_unfair_lock_unlock(&mbLock);
+	}
+}
+
+// 0 if the frame skips its present.
+int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
+	if (!mbEnabled) return 0;
+	endBlit(enc);
+	endRender(enc);
+	Ctx *ctx = enc->ctx;
+	int w = (int) src.width, h = (int) src.height;
+	if (!mbSet || mbSet->w != w || mbSet->h != h) {
+		MbSet *old = mbSet;
+		MbSet *fresh = mbAllocate(ctx->device, w, h);
+		if (fresh->n < 2) { // no IOSurface textures: leave the mailbox for this size
+			for (int i = 0; i < fresh->n; i++) { [fresh->tex[i] release]; CFRelease(fresh->surf[i]); }
+			free(fresh);
+			return 0;
+		}
+		os_unfair_lock_lock(&mbLock);
+		mbSet = fresh;
+		mbNext = 0;
+		if (old) {
+			old->retired = 1;
+			mbMaybeFree(old);
+		}
+		os_unfair_lock_unlock(&mbLock);
+	}
+	MbSet *s = mbSet;
+	int k = -1;
+	for (int i = 0; i < s->n; i++) {
+		int j = (mbNext + i) % s->n;
+		if (atomic_load(&s->state[j]) == MB_FREE && !IOSurfaceIsInUse(s->surf[j])) { k = j; break; }
+	}
+	if (k < 0) {
+		atomic_fetch_add(&mbSkipped, 1);
+		return 0;
+	}
+	mbNext = (k + 1) % s->n;
+	atomic_store(&s->state[k], MB_PENDING);
+	uint64_t seq = ++mbSeq;
+	@autoreleasepool {
+		MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+		rp.colorAttachments[0].texture = s->tex[k];
+		rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+		rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+		id<MTLRenderCommandEncoder> r = [cmd(enc) renderCommandEncoderWithDescriptor:rp];
+		[r setRenderPipelineState:mbPipeline];
+		[r setFragmentTexture:src atIndex:0];
+		[r setFragmentSamplerState:ctx->presentSampler atIndex:0];
+		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+		[r endEncoding];
+		double encodedAt = CACurrentMediaTime();
+		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) {
+			gpuLatency += (CACurrentMediaTime() - encodedAt - gpuLatency) * 0.1;
+			mbShow(s, k, seq);
+		}];
+	}
+	return 1;
+}
+
+long mc_mailbox_skipped(void) { return atomic_load(&mbSkipped); }
+long mc_mailbox_shown(void) { return atomic_load(&mbShownCount); }
 
 // ---- present off the frame's command buffer (opt-in: -Dmcopt.metal.presentQueue) ----
 // Idea: ByteV0rtex, noahdunnagan/mcopt#2. mc_present encodes the drawable's draw and presentDrawable into the frame's own

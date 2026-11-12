@@ -115,6 +115,10 @@ final class Native {
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_EXTRA_MS = fn("mc_pace_extra_ms", false, JAVA_DOUBLE);
 	private static final MethodHandle PACE = fn("mc_pace", false, JAVA_INT, JAVA_DOUBLE);
+	private static final MethodHandle MAILBOX_ENABLE = fn("mc_mailbox_enable", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
+	private static final MethodHandle MAILBOX_PRESENT = fn("mc_mailbox_present", false, JAVA_INT, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle MAILBOX_SKIPPED = fn("mc_mailbox_skipped", false, JAVA_LONG);
+	private static final MethodHandle MAILBOX_SHOWN = fn("mc_mailbox_shown", false, JAVA_LONG);
 	private static final MethodHandle SLEEP_PRECISE = fn("mc_sleep_precise", false, null, JAVA_LONG);
 	private static final MethodHandle PROBE = fn("mc_probe", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG,
 		JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -253,6 +257,10 @@ final class Native {
 	static double paceExtraMs() { try { return (double) PACE_EXTRA_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentDropped() { try { return (long) PRESENT_DROPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static void sleepPrecise(long ns) { try { SLEEP_PRECISE.invokeExact(ns); } catch (Throwable t) { throw rethrow(t); } }
+	static void mailboxEnable(long ctx, long layer, boolean on, int slots) { try { MAILBOX_ENABLE.invokeExact(ctx, layer, on ? 1 : 0, slots); } catch (Throwable t) { throw rethrow(t); } }
+	static boolean mailboxPresent(long enc, long texture) { try { return (int) MAILBOX_PRESENT.invokeExact(enc, texture) != 0; } catch (Throwable t) { throw rethrow(t); } }
+	static long mailboxSkipped() { try { return (long) MAILBOX_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static long mailboxShown() { try { return (long) MAILBOX_SHOWN.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static int probe(long ctx, long draws, int count, int totalQuads, long globals, long globalsOffset, long atlas, long atlasSampler, int width, int height,
 		int depthCompare, int frontIsClockwise, long bits, long classes, long pixels, long err, int errCap) {

@@ -172,7 +172,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 		double frameMs = (now - this.statStart) / 1e6 / this.statFrames;
 		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
 			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
-			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : ""));
+			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : "")
+			+ (MetalSurface.MAILBOX ? String.format(" (mailbox: %d shown, %d skipped so far)", Native.mailboxShown(), Native.mailboxSkipped()) : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
 			System.out.printf("mcopt-metal stats: terrain drew %d of %d quads (%.1f%%), %d before the split, %d chunks (%.1f quads each), %d frames drew terrain%n", t[0], t[1],
@@ -638,6 +639,17 @@ final class MetalEncoder implements CommandEncoderBackend {
 			if (Native.presentQueuedAcquire(this.enc, layer, ((MetalTexture.View) view).handle, GPU_TIMES && this.submitIndex < Integer.MAX_VALUE ? this.submitIndex : -1) == 0) return;
 			if (GPU_TIMES) GpuTimes.presentQueued(this.submitIndex);
 			this.statPresents++;
+		} finally {
+			MetalEvents.end(event);
+		}
+	}
+
+	void presentMailbox(GpuTextureView view) {
+		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
+		try {
+			this.trace("present", view);
+			this.flushClear(view.texture());
+			if (Native.mailboxPresent(this.enc, ((MetalTexture.View) view).handle)) this.statPresents++;
 		} finally {
 			MetalEvents.end(event);
 		}
