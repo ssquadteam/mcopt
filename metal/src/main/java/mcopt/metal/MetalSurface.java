@@ -13,7 +13,11 @@ import org.jspecify.annotations.Nullable;
  * the whole frame only adds latency and can stall on a drawable the display hasn't released yet.
  */
 final class MetalSurface implements GpuSurfaceBackend {
-	/** With vsync off, present only the last frame that makes each refresh (see mc_pace); -Dmcopt.metal.pace=false presents every frame. */
+	/** -Dmcopt.metal.mailbox (default true): with vsync off, present through IOSurfaces (mc_mailbox_present); false uses the paced present. */
+	static final boolean MAILBOX = !"false".equals(System.getProperty("mcopt.metal.mailbox"));
+	/** -Dmcopt.metal.mailboxSlots=2..8: IOSurfaces in the mailbox (default 4: one on screen, one WindowServer may still hold, two in flight). */
+	private static final int MAILBOX_SLOTS = Integer.getInteger("mcopt.metal.mailboxSlots", 4);
+	/** With vsync off and the mailbox off, present only the last frame that makes each refresh (see mc_pace); -Dmcopt.metal.pace=false presents every frame. */
 	private static final boolean PACE = Boolean.parseBoolean(System.getProperty("mcopt.metal.pace", "true"));
 	/** How long before a refresh a finished frame has to reach the compositor to be shown on it. */
 	/** -Dmcopt.metal.paceMarginMs: how long before a refresh the paced present must be done (the compositor's latch); default 2. */
@@ -33,6 +37,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 	static final boolean PACE_ADAPT = Boolean.getBoolean("mcopt.metal.paceAdapt");
 	private static @Nullable MetalSurface current;
 	private boolean paced;
+	private boolean mailbox;
 	private GpuSurface.@Nullable Configuration config;
 	private final long ctx;
 	private final MetalEncoder encoder;
@@ -57,7 +62,9 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.config = config;
 		boolean vsync = config.presentMode() == GpuSurface.PresentMode.FIFO;
 		// Frame generation schedules every present on the display's refresh grid, which needs vsync (FrameGen).
-		this.paced = !vsync && PACE && !FrameGen.enabled();
+		this.mailbox = !vsync && MAILBOX && !FrameGen.enabled();
+		this.paced = !vsync && PACE && !this.mailbox && !FrameGen.enabled();
+		Native.mailboxEnable(this.ctx, this.layer, this.mailbox, MAILBOX_SLOTS);
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || FrameGen.enabled() || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
 	}
@@ -78,6 +85,10 @@ final class MetalSurface implements GpuSurfaceBackend {
 		FrameGen frameGen = FrameGen.enabled() ? FrameGen.get(this.encoder) : null;
 		if (frameGen != null) {
 			frameGen.frame((MetalTexture.View) textureView, this.layer);
+			return;
+		}
+		if (this.mailbox) {
+			this.encoder.presentMailbox(textureView);
 			return;
 		}
 		if (this.paced && !Native.pace(PACE_MARGIN_S)) return;
