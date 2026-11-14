@@ -17,6 +17,10 @@ final class MetalSurface implements GpuSurfaceBackend {
 	static final boolean MAILBOX = !"false".equals(System.getProperty("mcopt.metal.mailbox"));
 	/** -Dmcopt.metal.mailboxSlots=2..8: IOSurfaces in the mailbox (default 4: one on screen, one WindowServer may still hold, two in flight). */
 	private static final int MAILBOX_SLOTS = Integer.getInteger("mcopt.metal.mailboxSlots", 4);
+	/** -Dmcopt.metal.mailboxLossless (default true): lossless-compressed mailbox surfaces, which make the per-frame copy ~40% cheaper. */
+	private static final boolean MAILBOX_LOSSLESS = !"false".equals(System.getProperty("mcopt.metal.mailboxLossless"));
+	/** -Dmcopt.metal.mailboxThin (opt-in): skip copies a later frame of the same refresh replaces; more fps above ~2x the refresh rate, slightly less even motion. */
+	static final boolean MAILBOX_THIN = Boolean.getBoolean("mcopt.metal.mailboxThin");
 	/** With vsync off and the mailbox off, present only the last frame that makes each refresh (see mc_pace); -Dmcopt.metal.pace=false presents every frame. */
 	private static final boolean PACE = Boolean.parseBoolean(System.getProperty("mcopt.metal.pace", "true"));
 	/** How long before a refresh a finished frame has to reach the compositor to be shown on it. */
@@ -64,7 +68,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 		// Frame generation schedules every present on the display's refresh grid, which needs vsync (FrameGen).
 		this.mailbox = !vsync && MAILBOX && !FrameGen.enabled();
 		this.paced = !vsync && PACE && !this.mailbox && !FrameGen.enabled();
-		Native.mailboxEnable(this.ctx, this.layer, this.mailbox, MAILBOX_SLOTS);
+		Native.mailboxEnable(this.ctx, this.layer, this.mailbox, MAILBOX_SLOTS, (MAILBOX_LOSSLESS ? 1 : 0) | (MAILBOX_THIN ? 2 : 0));
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || FrameGen.enabled() || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
 	}
