@@ -21,7 +21,9 @@ import org.lwjgl.system.MemoryUtil;
 final class MetalPipeline implements BackendRenderPipeline {
 	/** Metal bakes the depth attachment format into the pipeline, so like Vulkan there's one for passes with depth and one without. */
 	final long withDepth;
-	final long withoutDepth;
+	private long withoutDepth;
+	private long depthStateWithoutDepth;
+	private Pipelines.@Nullable Deferred noDepth;
 	final long depthState;
 	final List<BindGroupLayout.UniformDescription> uniforms;
 	final List<MetalUniform> slots;
@@ -45,6 +47,7 @@ final class MetalPipeline implements BackendRenderPipeline {
 		this.withoutDepth = withoutDepth;
 		this.pulled = pulled;
 		this.depthState = depthState;
+		this.depthStateWithoutDepth = withoutDepth != 0 ? depthState : 0;
 		this.depthCompare = depthCompare;
 		this.name = info.name();
 		this.uniforms = info.uniforms();
@@ -104,8 +107,10 @@ final class MetalPipeline implements BackendRenderPipeline {
 		DepthStencilState depth = info.depthStencilState();
 		Pipelines.Handles h = Pipelines.build(encoder, info.name(), shader(info, ShaderType.VERTEX).module().spv(), shader(info, ShaderType.FRAGMENT).module().spv(),
 			info.uniforms().size(), (stack, hasDepth, vertexInput) -> describe(stack, info, hasDepth, vertexInput),
-			depth != null, depth == null ? 7 : MetalConst.compare(depth.depthTest()), depth != null && depth.writeDepth());
-		return new MetalPipeline(encoder, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), info);
+			depth != null, depth == null ? 7 : MetalConst.compare(depth.depthTest()), depth != null && depth.writeDepth(), MetalConst.primitive(info.primitiveTopology()) == 0);
+		MetalPipeline compiled = new MetalPipeline(encoder, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), info);
+		compiled.noDepth = h.noDepth();
+		return compiled;
 	}
 
 	private static CreateInfo.Shader shader(CreateInfo info, ShaderType type) {
@@ -151,12 +156,29 @@ final class MetalPipeline implements BackendRenderPipeline {
 		return this.closed;
 	}
 
+	/** The pipeline state for a pass without a depth attachment, built on first use for a pipeline with a depth test. */
+	long withoutDepth() {
+		if (this.withoutDepth == 0 && this.noDepth != null) {
+			long[] h = Pipelines.buildWithoutDepth(this.encoder, this.noDepth);
+			this.withoutDepth = h[0];
+			this.depthStateWithoutDepth = h[1];
+			this.noDepth = null;
+		}
+		return this.withoutDepth;
+	}
+
+	/** The depth state to bind with {@link #withoutDepth()}, which must have been called first. */
+	long depthStateWithoutDepth() {
+		return this.depthStateWithoutDepth;
+	}
+
 	@Override
 	public void close() {
 		if (!this.closed) {
 			this.closed = true;
 			this.encoder.releaseLater(this.withDepth);
 			if (this.withoutDepth != 0) this.encoder.releaseLater(this.withoutDepth);
+			if (this.depthStateWithoutDepth != 0 && this.depthStateWithoutDepth != this.depthState) this.encoder.releaseLater(this.depthStateWithoutDepth);
 			if (this.pulled != 0) this.encoder.releaseLater(this.pulled);
 			this.encoder.releaseLater(this.depthState);
 		}

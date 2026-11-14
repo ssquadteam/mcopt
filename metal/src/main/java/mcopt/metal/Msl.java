@@ -16,7 +16,7 @@ final class Msl {
 	private Msl() {
 	}
 
-	static Translated translate(IntBuffer spirv, boolean vertex, int uniformCount) {
+	static Translated translate(IntBuffer spirv, boolean vertex, int uniformCount, boolean points) {
 		int model = vertex ? Spv.SpvExecutionModelVertex : Spv.SpvExecutionModelFragment;
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			PointerBuffer out = stack.callocPointer(1);
@@ -33,6 +33,8 @@ final class Msl {
 				spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_PLATFORM, SPVC_MSL_PLATFORM_MACOS);
 				spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_TEXTURE_BUFFER_NATIVE, true);
 				if (vertex) spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FLIP_VERTEX_Y, true);
+				// Metal rejects a pipeline whose vertex function writes point size unless it draws points; GL and Vulkan ignore it.
+				if (vertex) spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ENABLE_POINT_SIZE_BUILTIN, points);
 				check(context, spvc_compiler_install_compiler_options(compiler, options), "install options");
 				for (int i = 0; i < uniformCount; i++) bind(stack, compiler, model, 0, i, i);
 				bind(stack, compiler, model, SPVC_MSL_PUSH_CONSTANT_DESC_SET, SPVC_MSL_PUSH_CONSTANT_BINDING, MetalConst.PUSH_CONSTANTS_INDEX);

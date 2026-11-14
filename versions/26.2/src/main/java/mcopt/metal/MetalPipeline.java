@@ -40,7 +40,9 @@ final class MetalPipeline implements CompiledRenderPipeline {
 	private static final List<String> TERRAIN_SLOTS = List.of("u_Globals", "u_SectionTimeInfo", "u_LightTex", "u_BlockTex");
 
 	final long withDepth;
-	final long withoutDepth;
+	private long withoutDepth;
+	private long depthStateWithoutDepth;
+	private Pipelines.@Nullable Deferred noDepth;
 	final long depthState;
 	final List<MetalUniform> slots;
 	final List<BindGroupLayout.UniformDescription> uniforms;
@@ -65,6 +67,7 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		this.withoutDepth = withoutDepth;
 		this.pulled = pulled;
 		this.depthState = depthState;
+		this.depthStateWithoutDepth = withoutDepth != 0 ? depthState : 0;
 		this.depthCompare = depthCompare;
 		this.slots = slots;
 		this.uniforms = slots.stream().map(u -> new BindGroupLayout.UniformDescription(u.name(), u.format())).toList();
@@ -148,8 +151,10 @@ final class MetalPipeline implements CompiledRenderPipeline {
 			fragment.rebind(outputs, entries);
 			DepthStencilState depth = pipeline.getDepthStencilState();
 			Pipelines.Handles h = Pipelines.build(encoder, name, vertex.spirv(), fragment.spirv(), slots.size(), (stack, hasDepth, vertexInput) -> describe(stack, pipeline, hasDepth, vertexInput),
-				depth != null, depth == null ? 7 : MetalConst.compare(depth.depthTest()), depth != null && depth.writeDepth());
-			return new MetalPipeline(encoder, pipeline, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), slots, aliases);
+				depth != null, depth == null ? 7 : MetalConst.compare(depth.depthTest()), depth != null && depth.writeDepth(), MetalConst.primitive(pipeline.getPrimitiveTopology()) == 0);
+			MetalPipeline compiled = new MetalPipeline(encoder, pipeline, h.withDepth(), h.withoutDepth(), h.pulled(), h.depthState(), h.depthCompare(), slots, aliases);
+			compiled.noDepth = h.noDepth();
+			return compiled;
 		} catch (ShaderCompileException | IllegalStateException e) {
 			LOGGER.error("Couldn't compile pipeline {}: {}", pipeline.getLocation(), e.getMessage());
 			return invalid(encoder, pipeline);
@@ -265,11 +270,28 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		return MemoryUtil.memAddress(d.flip());
 	}
 
+	/** The pipeline state for a pass without a depth attachment, built on first use for a pipeline with a depth test. */
+	long withoutDepth() {
+		if (this.withoutDepth == 0 && this.noDepth != null) {
+			long[] h = Pipelines.buildWithoutDepth(this.encoder, this.noDepth);
+			this.withoutDepth = h[0];
+			this.depthStateWithoutDepth = h[1];
+			this.noDepth = null;
+		}
+		return this.withoutDepth;
+	}
+
+	/** The depth state to bind with {@link #withoutDepth()}, which must have been called first. */
+	long depthStateWithoutDepth() {
+		return this.depthStateWithoutDepth;
+	}
+
 	void close() {
 		if (!this.closed && this.isValid()) {
 			this.closed = true;
 			this.encoder.releaseLater(this.withDepth);
 			if (this.withoutDepth != 0) this.encoder.releaseLater(this.withoutDepth);
+			if (this.depthStateWithoutDepth != 0 && this.depthStateWithoutDepth != this.depthState) this.encoder.releaseLater(this.depthStateWithoutDepth);
 			if (this.pulled != 0) this.encoder.releaseLater(this.pulled);
 			this.encoder.releaseLater(this.depthState);
 		}

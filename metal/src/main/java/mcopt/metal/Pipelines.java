@@ -19,7 +19,11 @@ final class Pipelines {
 		long describe(MemoryStack stack, boolean hasDepth, boolean vertexInput);
 	}
 
-	record Handles(long withDepth, long withoutDepth, long pulled, long depthState, int depthCompare) {
+	record Handles(long withDepth, long withoutDepth, long pulled, long depthState, int depthCompare, @Nullable Deferred noDepth) {
+	}
+
+	/** What a pipeline with a depth test needs to build its colour-only variant later, the first time a pass without depth draws with it. */
+	record Deferred(String name, Translated v, Translated f, Describer describe) {
 	}
 
 	private Pipelines() {
@@ -59,14 +63,14 @@ final class Pipelines {
 	}
 
 	static Handles build(MetalEncoder encoder, String name, ByteBuffer vertexSpv, ByteBuffer fragmentSpv, int uniformCount, Describer describe,
-		boolean hasDepthState, int compare, boolean writeDepth) {
+		boolean hasDepthState, int compare, boolean writeDepth, boolean points) {
 		long ctx = encoder.ctx;
 		long t0 = System.nanoTime(), t1 = t0, t2 = t0;
 		long vlib = 0, flib = 0, plib = 0;
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long err = stack.nmalloc(1, 4096);
-			Translated v = translate(vertexSpv, true, uniformCount);
-			Translated f = translate(fragmentSpv, false, uniformCount);
+			Translated v = translate(vertexSpv, true, uniformCount, points);
+			Translated f = translate(fragmentSpv, false, uniformCount, false);
 			if (DUMP_DIR != null) dump(name, v, f);
 			String defines = BUILTIN_MSL ? SODIUM_TERRAIN.get(name) : null;
 			if (defines != null) {
@@ -106,7 +110,7 @@ final class Pipelines {
 			}
 			int depthCompare = hasDepthState ? compare : 7;
 			long depthState = Native.depthStateNew(ctx, depthCompare, hasDepthState && writeDepth ? 1 : 0);
-			return new Handles(withDepth, withoutDepth, pulled, depthState, depthCompare);
+			return new Handles(withDepth, withoutDepth, pulled, depthState, depthCompare, hasDepthState ? new Deferred(name, v, f, describe) : null);
 		} finally {
 			if (vlib != 0) Native.release(vlib);
 			if (flib != 0) Native.release(flib);
@@ -118,6 +122,28 @@ final class Pipelines {
 				libraryNs += t2 - t1;
 				stateNs += t3 - t2;
 			}
+		}
+	}
+
+	/**
+	 * The colour-only variant of a pipeline with a depth test, and an always-pass depth state to bind with it. OpenGL and Vulkan
+	 * just skip the test when such a pipeline draws into a target without depth (Lunar's HUD does once world hosting starts).
+	 */
+	static long[] buildWithoutDepth(MetalEncoder encoder, Deferred d) {
+		long ctx = encoder.ctx, vlib = 0, flib = 0;
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long err = stack.nmalloc(1, 4096);
+			vlib = library(ctx, d.v().msl(), err);
+			if (vlib == 0) throw new IllegalStateException(d.name() + " vertex: " + MemoryUtil.memUTF8(err));
+			flib = library(ctx, d.f().msl(), err);
+			if (flib == 0) throw new IllegalStateException(d.name() + " fragment: " + MemoryUtil.memUTF8(err));
+			long vname = MemoryUtil.memAddress(stack.UTF8(d.v().entry())), fname = MemoryUtil.memAddress(stack.UTF8(d.f().entry()));
+			long pso = Native.pipelineNew(ctx, vlib, vname, flib, fname, d.describe().describe(stack, false, true), err, 4096);
+			if (pso == 0) throw new IllegalStateException(d.name() + " (no depth): " + MemoryUtil.memUTF8(err));
+			return new long[] {pso, Native.depthStateNew(ctx, 7, 0)};
+		} finally {
+			if (vlib != 0) Native.release(vlib);
+			if (flib != 0) Native.release(flib);
 		}
 	}
 
@@ -189,18 +215,19 @@ final class Pipelines {
 	}
 	static int mslHits, mslMisses;
 
-	private static Translated translate(ByteBuffer spv, boolean vertex, int uniformCount) {
-		if (!MSL_CACHE) return Msl.translate(spv.asIntBuffer(), vertex, uniformCount);
+	private static Translated translate(ByteBuffer spv, boolean vertex, int uniformCount, boolean points) {
+		if (!MSL_CACHE) return Msl.translate(spv.asIntBuffer(), vertex, uniformCount, points);
 		String key;
 		try {
 			java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
 			md.update(MSL_KEY_SALT.getBytes(java.nio.charset.StandardCharsets.UTF_8));
 			md.update((byte) (vertex ? 0 : 1));
 			md.update(java.nio.ByteBuffer.allocate(4).putInt(uniformCount).array());
+			md.update((byte) (points ? 1 : 0));
 			md.update(spv.duplicate());
 			key = java.util.HexFormat.of().formatHex(md.digest());
 		} catch (java.security.NoSuchAlgorithmException e) {
-			return Msl.translate(spv.asIntBuffer(), vertex, uniformCount);
+			return Msl.translate(spv.asIntBuffer(), vertex, uniformCount, points);
 		}
 		java.nio.file.Path file = MSL_DIR.resolve(key);
 		try {
@@ -209,13 +236,13 @@ final class Pipelines {
 			if (nl > 0) {
 				mslHits++;
 				Translated hit = new Translated(text.substring(nl + 1), text.substring(0, nl));
-				if (MSL_MODE.equals("verify") && !hit.equals(Msl.translate(spv.asIntBuffer(), vertex, uniformCount))) mslMismatches++;
+				if (MSL_MODE.equals("verify") && !hit.equals(Msl.translate(spv.asIntBuffer(), vertex, uniformCount, points))) mslMismatches++;
 				return hit;
 			}
 		} catch (java.io.IOException missing) {
 			// not cached yet
 		}
-		Translated t = Msl.translate(spv.asIntBuffer(), vertex, uniformCount);
+		Translated t = Msl.translate(spv.asIntBuffer(), vertex, uniformCount, points);
 		mslMisses++;
 		try {
 			java.nio.file.Files.createDirectories(MSL_DIR);
