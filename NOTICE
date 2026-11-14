@@ -4,6 +4,10 @@ Copyright 2026 Noah Dunnagan
 mcopt, a Minecraft mod, was created by Noah Dunnagan. If you use or redistribute this code, keep this NOTICE with it
 and credit mcopt (https://github.com/noahdunnagan/mcopt).
 
+This fork (https://github.com/ssquadteam/mcopt) is maintained by ssquadteam. Portions Copyright 2026 ssquadteam.
+It modifies files of the original and adds Minecraft 26.2 support, Lunar Client compatibility, the shared multi-version
+build, the Metal Renderer settings page and the IOSurface mailbox and zero-copy present.
+
 mcopt is licensed under the Apache License, Version 2.0 (LICENSE), except for the files below, which keep the licence
 of the project they come from. Each of them says so in its header.
 

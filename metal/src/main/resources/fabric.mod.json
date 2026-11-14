@@ -5,7 +5,7 @@
 	"name": "mcopt Metal",
 	"description": "Native Apple Metal rendering backend.",
 	"license": ["Apache-2.0", "LicenseRef-PolyForm-Shield-1.0.0"],
-	"authors": ["Noah Dunnagan"],
+	"authors": ["Noah Dunnagan", "ssquadteam"],
 	"environment": "client",
 	"entrypoints": { "preLaunch": ["mcopt.metal.Preload"], "sodium:config_api_user": ["mcopt.metal.MetalOptions"] },
 	"mixins": ["${mixins}"],
