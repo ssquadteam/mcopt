@@ -66,3 +66,9 @@ class names; `versions/26.2/remap.properties` maps them to 26.2's before compili
 [Sodium](https://github.com/CaffeineMC/sodium) keep the [PolyForm Shield License 1.0.0](LICENSES/PolyForm-Shield-1.0.0.md).
 Each of those files says so in its header, and NOTICE lists them. mcopt runs on top of Sodium, by JellySquid and its
 contributors.
+
+### Credits
+
+- [mcopt](https://github.com/noahdunnagan/mcopt) by Noah Dunnagan, the original mod this fork is built on.
+- [Slipstream](https://github.com/rhysdh540/Slipstream) by rhysdh540, for the idea of marking the presentation layer's
+  contents opaque, so macOS shows frames without blending them and the zero-copy present needs no alpha write.
