@@ -612,6 +612,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 			t.zcSet = set;
 			t.rehandle(Native.zcCurrent(set));
 			this.zeroCopy.add(t);
+			Native.mailboxRetire();
+			System.out.println("[mcopt] zero-copy: on, " + t.getWidth(0) + "x" + t.getHeight(0));
 			return true;
 		}
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
