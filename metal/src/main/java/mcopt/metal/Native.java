@@ -120,6 +120,25 @@ final class Native {
 	private static final MethodHandle MAILBOX_SKIPPED = fn("mc_mailbox_skipped", false, JAVA_LONG);
 	private static final MethodHandle MAILBOX_SHOWN = fn("mc_mailbox_shown", false, JAVA_LONG);
 	private static final MethodHandle MAILBOX_THINNED = fn("mc_mailbox_thinned", false, JAVA_LONG);
+	private static final MethodHandle ZC_PREPARE = fn("mc_zero_copy_prepare", false, null, JAVA_INT);
+	private static final MethodHandle ZC_NEW = fn("mc_zc_new", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
+	private static final MethodHandle ZC_CURRENT = fn("mc_zc_current", false, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle ZC_PRESENT = fn("mc_zc_present", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle ZC_RELEASE = fn("mc_zc_release", false, null, JAVA_LONG);
+	private static final MethodHandle ZC_FALLBACKS = fn("mc_zc_fallbacks", false, JAVA_LONG);
+	/** -Dmcopt.metal.zeroCopy (opt-in, with the mailbox): the main color texture is drawn straight into mailbox surfaces (mc_zc_present). */
+	static final boolean ZERO_COPY = Boolean.getBoolean("mcopt.metal.zeroCopy") && !mcopt.metal.rec.Rec.ON;
+
+	static {
+		// before any pipeline is made: each one needs its BGRA twin made with it
+		if (ZERO_COPY) {
+			try {
+				ZC_PREPARE.invokeExact(1);
+			} catch (Throwable t) {
+				throw rethrow(t);
+			}
+		}
+	}
 	private static final MethodHandle SLEEP_PRECISE = fn("mc_sleep_precise", false, null, JAVA_LONG);
 	private static final MethodHandle PROBE = fn("mc_probe", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG,
 		JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -263,6 +282,11 @@ final class Native {
 	static long mailboxSkipped() { try { return (long) MAILBOX_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long mailboxShown() { try { return (long) MAILBOX_SHOWN.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long mailboxThinned() { try { return (long) MAILBOX_THINNED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static long zcNew(long ctx, int w, int h) { try { return (long) ZC_NEW.invokeExact(ctx, w, h); } catch (Throwable t) { throw rethrow(t); } }
+	static long zcCurrent(long set) { try { return (long) ZC_CURRENT.invokeExact(set); } catch (Throwable t) { throw rethrow(t); } }
+	static long zcPresent(long enc, long set) { try { return (long) ZC_PRESENT.invokeExact(enc, set); } catch (Throwable t) { throw rethrow(t); } }
+	static void zcRelease(long set) { try { ZC_RELEASE.invokeExact(set); } catch (Throwable t) { throw rethrow(t); } }
+	static long zcFallbacks() { try { return (long) ZC_FALLBACKS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static int probe(long ctx, long draws, int count, int totalQuads, long globals, long globalsOffset, long atlas, long atlasSampler, int width, int height,
 		int depthCompare, int frontIsClockwise, long bits, long classes, long pixels, long err, int errCap) {

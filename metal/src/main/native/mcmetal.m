@@ -10,6 +10,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
 #import <QuartzCore/CATransaction.h>
+#import <objc/runtime.h>
 #include <mach/mach_time.h>
 #include <sys/event.h>
 #include <math.h>
@@ -360,6 +361,47 @@ id<MTLLibrary> mc_library_new(Ctx *ctx, const char *source, char *err, int errCa
 	}
 }
 
+// ---- zero-copy twins (-Dmcopt.metal.zeroCopy) ----
+// Zero-copy surfaces are BGRA (the only 8-bit format CoreAnimation shows lossless-compressed) where the game's main color
+// texture is RGBA. Every pipeline with an RGBA8 color attachment gets a BGRA twin when it's made, which mc_r_pipeline binds
+// in passes whose RGBA8 attachments are all zero-copy surfaces.
+static int zcOn;
+static char zcTwinKey, zcMaskKey;
+#define ZC_CACHE 256
+static struct { void *pso; id twin; unsigned mask; } zcCache[ZC_CACHE];
+
+void mc_zero_copy_prepare(int on) { zcOn = on; }
+
+// Pipelines are only released after a commit, so the cache (keyed by pointer) is emptied at every commit.
+static void zcCacheClear(void) {
+	if (zcOn) memset(zcCache, 0, sizeof zcCache);
+}
+
+static void zcMakeTwin(Ctx *ctx, MTLRenderPipelineDescriptor *pd, id<MTLRenderPipelineState> pso, int colors) {
+	unsigned mask = 0;
+	for (int c = 0; c < colors; c++) {
+		if (pd.colorAttachments[c].pixelFormat != MTLPixelFormatRGBA8Unorm) continue;
+		pd.colorAttachments[c].pixelFormat = MTLPixelFormatBGRA8Unorm;
+		mask |= 1u << c;
+	}
+	if (!mask) return;
+	id<MTLRenderPipelineState> twin = [ctx->device newRenderPipelineStateWithDescriptor:pd error:nil];
+	if (!twin) return;
+	objc_setAssociatedObject(pso, &zcTwinKey, twin, OBJC_ASSOCIATION_RETAIN);
+	objc_setAssociatedObject(pso, &zcMaskKey, @(mask), OBJC_ASSOCIATION_RETAIN);
+	[twin release];
+}
+
+static id<MTLRenderPipelineState> zcTwinFor(unsigned mask, id<MTLRenderPipelineState> pso) {
+	unsigned h = (unsigned) ((uintptr_t) pso >> 4) & (ZC_CACHE - 1);
+	if (zcCache[h].pso != (void *) pso) {
+		zcCache[h].pso = (void *) pso;
+		zcCache[h].twin = objc_getAssociatedObject(pso, &zcTwinKey);
+		zcCache[h].mask = [objc_getAssociatedObject(pso, &zcMaskKey) unsignedIntValue];
+	}
+	return zcCache[h].twin && zcCache[h].mask == mask ? zcCache[h].twin : pso;
+}
+
 /*
  * desc layout (ints):
  *   [0] vertexBufferCount, then per buffer: bufferIndex, stride, stepRate(0 = per vertex)
@@ -411,6 +453,7 @@ id<MTLRenderPipelineState> mc_pipeline_new(Ctx *ctx, id<MTLLibrary> vlib, const 
 		NSError *e = nil;
 		id<MTLRenderPipelineState> pso = [ctx->device newRenderPipelineStateWithDescriptor:pd error:&e];
 		if (!pso) copyError(e, err, errCap);
+		else if (zcOn) zcMakeTwin(ctx, pd, pso, colors);
 		return pso;
 	}
 }
@@ -561,6 +604,7 @@ static void pqSubmit(void);
 // Commits everything recorded so far (the pre command buffer first). Returns the retained main command buffer so Java can
 // wait on it (frame pacing, fences); it completes after the pre one.
 id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
+	zcCacheClear();
 	double t = 0;
 	long n = 0;
 	uint64_t big = 0, preBytes = 0, mainBytes = 0;
@@ -863,6 +907,8 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 	enc->colorCount = count;
 	memcpy(enc->colors, colors, sizeof(id) * count);
 	enc->depth = depth;
+	enc->zcMask = 0;
+	if (zcOn) for (int i = 0; i < count; i++) if (colors[i] && colors[i].pixelFormat == MTLPixelFormatBGRA8Unorm) enc->zcMask |= 1u << i;
 	@autoreleasepool {
 		MTLRenderPassDescriptor *rp = cpuPass ? keptPass(enc, count, colors, depth) : [MTLRenderPassDescriptor renderPassDescriptor];  // opt-in
 		for (int i = 0; i < count; i++) {
@@ -935,6 +981,7 @@ void mc_render_resume(Enc *enc, id<MTLComputeCommandEncoder> compute) {
 void mc_r_pipeline(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLDepthStencilState> depth, int cull, int wireframe,
 	float biasConstant, float biasSlope, int primitive) {
 	id<MTLRenderCommandEncoder> r = enc->render;
+	if (enc->zcMask) pso = zcTwinFor(enc->zcMask, pso);
 	[r setRenderPipelineState:pso];
 	if (depth) [r setDepthStencilState:depth];
 	[r setCullMode:cull ? MTLCullModeBack : MTLCullModeNone];
@@ -1276,12 +1323,14 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 // Surfaces are lossless-compressed BGRA where the GPU supports it: the copy costs ~0.21 ms at 3024x1964 on an M4 against
 // ~0.36 ms into a plain IOSurface and ~0.31 ms into a CAMetalLayer drawable.
 #define MB_MAX 8
-enum { MB_FREE, MB_PENDING, MB_SHOWN };
+enum { MB_FREE, MB_PENDING, MB_SHOWN, MB_DRAWING };
 typedef struct MbSet {
 	int w, h, n, retired;
 	IOSurfaceRef surf[MB_MAX];
 	id<MTLTexture> tex[MB_MAX];
 	_Atomic int state[MB_MAX];
+	id<MTLTexture> scratch;  // zero-copy: drawn into when no surface is free (that frame isn't shown)
+	int drawing, next;       // zero-copy: the surface the current frame draws into (-1: scratch), where the next search starts
 } MbSet;
 static CALayer *mbLayer;
 static CAMetalLayer *mbParent;
@@ -1313,26 +1362,31 @@ static IOSurfaceRef mbSurface(int w, int h) {
 	return IOSurfaceCreate((CFDictionaryRef) props);
 }
 
-// Frees a replaced set once nothing uses it: not on screen and no frame of it still on the GPU. Under mbLock.
-static void mbMaybeFree(MbSet *s) {
-	if (!s || !s->retired || s == mbShownSet || s == mbSet) return;
-	for (int i = 0; i < s->n; i++) if (atomic_load(&s->state[i]) == MB_PENDING) return;
+static void mbDestroy(MbSet *s) {
 	for (int i = 0; i < s->n; i++) {
 		[s->tex[i] release];
 		CFRelease(s->surf[i]); // the layer's contents retains the surface it shows
 	}
+	[s->scratch release];
 	free(s);
 }
 
-static MbSet *mbAllocate(id<MTLDevice> device, int w, int h) {
+// Frees a replaced set once nothing uses it: not on screen and no frame of it still on the GPU. Under mbLock.
+static void mbMaybeFree(MbSet *s) {
+	if (!s || !s->retired || s == mbShownSet || s == mbSet) return;
+	for (int i = 0; i < s->n; i++) if (atomic_load(&s->state[i]) == MB_PENDING) return;
+	mbDestroy(s);
+}
+
+static MbSet *mbAllocate(id<MTLDevice> device, int w, int h, MTLTextureUsage usage, int count) {
 	MbSet *s = calloc(1, sizeof(MbSet));
 	s->w = w;
 	s->h = h;
 	@autoreleasepool {
 		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
-		d.usage = MTLTextureUsageRenderTarget;
+		d.usage = usage;
 		d.storageMode = MTLStorageModeShared;
-		for (int i = 0; i < mbSlots; i++) {
+		for (int i = 0; i < count; i++) {
 			IOSurfaceRef surf = mbSurface(w, h);
 			id<MTLTexture> tex = surf ? [device newTextureWithDescriptor:d iosurface:surf plane:0] : nil;
 			if (!tex && mbLossless) {
@@ -1453,10 +1507,9 @@ int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
 	int w = (int) src.width, h = (int) src.height;
 	if (!mbSet || mbSet->w != w || mbSet->h != h) {
 		MbSet *old = mbSet;
-		MbSet *fresh = mbAllocate(ctx->device, w, h);
+		MbSet *fresh = mbAllocate(ctx->device, w, h, MTLTextureUsageRenderTarget, mbSlots);
 		if (fresh->n < 2) { // no IOSurface textures: leave the mailbox for this size
-			for (int i = 0; i < fresh->n; i++) { [fresh->tex[i] release]; CFRelease(fresh->surf[i]); }
-			free(fresh);
+			mbDestroy(fresh);
 			return 0;
 		}
 		os_unfair_lock_lock(&mbLock);
@@ -1503,6 +1556,135 @@ int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
 }
 
 long mc_mailbox_skipped(void) { return atomic_load(&mbSkipped); }
+
+// ---- zero-copy present (opt-in: -Dmcopt.metal.zeroCopy, with the mailbox) ----
+// The game's main color texture becomes a set of mailbox surfaces: a frame draws straight into a free one, which goes on
+// screen when the frame's GPU work completes, and the next frame draws into another. Saves the mailbox's copy, ~0.45 ms per
+// frame at 3024x1964 on an M4 with game-like content (fewer bytes moved overall than drawing into a private texture and
+// copying). The pipelines' BGRA twins are above (zcMakeTwin).
+static _Atomic long zcFallbacks;
+
+static int zcPick(MbSet *s) {
+	for (int i = 0; i < s->n; i++) {
+		int j = (s->next + i) % s->n;
+		if (atomic_load(&s->state[j]) == MB_FREE && !IOSurfaceIsInUse(s->surf[j])) {
+			atomic_store(&s->state[j], MB_DRAWING);
+			s->next = (j + 1) % s->n;
+			return j;
+		}
+	}
+	return -1;
+}
+
+MbSet *mc_zc_new(Ctx *ctx, int w, int h) {
+	MbSet *s = mbAllocate(ctx->device, w, h, MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead, MIN(MB_MAX, mbSlots + 2));
+	@autoreleasepool {
+		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
+		d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+		d.storageMode = MTLStorageModePrivate;
+		s->scratch = [ctx->device newTextureWithDescriptor:d];
+	}
+	if (s->n < 3 || !s->scratch) {
+		mbDestroy(s);
+		return NULL;
+	}
+	s->drawing = zcPick(s);
+	return s;
+}
+
+id<MTLTexture> mc_zc_current(MbSet *s) { return s->drawing >= 0 ? s->tex[s->drawing] : s->scratch; }
+
+// CALayer blends its contents' alpha with what's behind it, and the game leaves alpha below 1 in places: write alpha 1 over
+// the whole frame. Drawn into the frame's last render encoder when t is its first attachment (no extra load or store).
+static void zcOpaque(Enc *enc, id<MTLTexture> t) {
+	Ctx *ctx = enc->ctx;
+	int w = (int) t.width, h = (int) t.height;
+	@autoreleasepool {
+		if (!enc->render || enc->colorCount < 1 || enc->colors[0] != t || (enc->dead & 1)) {
+			endBlit(enc);
+			endRender(enc);
+			MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+			rp.colorAttachments[0].texture = t;
+			rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+			rp.colorAttachments[0].storeAction = MTLStoreActionUnknown;
+			enc->colorCount = 1;
+			enc->colors[0] = t;
+			enc->depth = nil;
+			enc->zcMask = 1;
+			enc->width = w;
+			enc->height = h;
+			openRender(enc, rp);
+			atomic_fetch_add(&zcFallbacks, 1);
+		}
+		NSMutableString *key = [NSMutableString stringWithFormat:@"opaque %lu", (unsigned long) enc->depth.pixelFormat];
+		for (int i = 0; i < enc->colorCount; i++) [key appendFormat:@" %lu", (unsigned long) (enc->colors[i] ? enc->colors[i].pixelFormat : 0)];
+		id<MTLRenderPipelineState> pso = ctx->clearPipelines[(id) key];
+		if (!pso) {
+			MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
+			pd.vertexFunction = [[ctx->builtins newFunctionWithName:@"clear_vs"] autorelease];
+			pd.fragmentFunction = [[ctx->builtins newFunctionWithName:@"clear_fs"] autorelease];
+			for (int i = 0; i < enc->colorCount; i++) {
+				if (!enc->colors[i]) continue;
+				pd.colorAttachments[i].pixelFormat = enc->colors[i].pixelFormat;
+				pd.colorAttachments[i].writeMask = i == 0 ? MTLColorWriteMaskAlpha : MTLColorWriteMaskNone;
+			}
+			pd.depthAttachmentPixelFormat = enc->depth ? enc->depth.pixelFormat : MTLPixelFormatInvalid;
+			NSError *e = nil;
+			pso = [ctx->device newRenderPipelineStateWithDescriptor:pd error:&e];
+			if (!pso) {
+				NSLog(@"[mcopt] zero-copy: no alpha pipeline: %@", e);
+				endRender(enc);
+				return;
+			}
+			ctx->clearPipelines[(id) key] = pso;
+			[pso release];
+		}
+		struct { float color[4]; float depth; float pad[3]; } c = {{0, 0, 0, 1}, 0, {0}};
+		id<MTLRenderCommandEncoder> r = enc->render;
+		[r setRenderPipelineState:pso];
+		[r setDepthStencilState:ctx->depthKeep];
+		[r setCullMode:MTLCullModeNone];
+		[r setTriangleFillMode:MTLTriangleFillModeFill];
+		[r setDepthBias:0 slopeScale:0 clamp:0];
+		[r setViewport:(MTLViewport) {0, 0, w, h, 0, 1}];
+		[r setScissorRect:(MTLScissorRect) {0, 0, w, h}];
+		[r setVertexBytes:&c length:sizeof c atIndex:0];
+		[r setFragmentBytes:&c length:sizeof c atIndex:0];
+		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+	}
+	endRender(enc);
+}
+
+// Shows the surface this frame drew into once its GPU work completes; returns the texture the next frame draws into.
+id<MTLTexture> mc_zc_present(Enc *enc, MbSet *s) {
+	int k = s->drawing;
+	if (k >= 0 && mbEnabled) {
+		zcOpaque(enc, s->tex[k]);
+		endBlit(enc);
+		atomic_store(&s->state[k], MB_PENDING);
+		uint64_t seq = ++mbSeq;
+		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) {
+			mbShow(s, k, seq);
+		}];
+	} else {
+		if (k >= 0) atomic_store(&s->state[k], MB_FREE);
+		atomic_fetch_add(&mbSkipped, 1);
+	}
+	s->drawing = zcPick(s);
+	return mc_zc_current(s);
+}
+
+// The texture is gone: frees the set once nothing shows it and no frame of it is on the GPU.
+void mc_zc_release(MbSet *s) {
+	os_unfair_lock_lock(&mbLock);
+	if (s->drawing >= 0) atomic_store(&s->state[s->drawing], MB_FREE);
+	s->drawing = -1;
+	s->retired = 1;
+	mbMaybeFree(s);
+	os_unfair_lock_unlock(&mbLock);
+}
+
+long mc_zc_fallbacks(void) { return atomic_load(&zcFallbacks); }
 long mc_mailbox_shown(void) { return atomic_load(&mbShownCount); }
 long mc_mailbox_thinned(void) { return atomic_load(&mbThinned); }
 

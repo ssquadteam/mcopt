@@ -69,6 +69,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.mailbox = !vsync && MAILBOX && !FrameGen.enabled();
 		this.paced = !vsync && PACE && !this.mailbox && !FrameGen.enabled();
 		Native.mailboxEnable(this.ctx, this.layer, this.mailbox, MAILBOX_SLOTS, (MAILBOX_LOSSLESS ? 1 : 0) | (MAILBOX_THIN ? 2 : 0));
+		if (!this.mailbox) this.encoder.demoteAllZeroCopy();
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || FrameGen.enabled() || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);
 	}
@@ -92,7 +93,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 			return;
 		}
 		if (this.mailbox) {
-			this.encoder.presentMailbox(textureView);
+			if (!Native.ZERO_COPY || !this.encoder.presentZeroCopy(textureView)) this.encoder.presentMailbox(textureView);
 			return;
 		}
 		if (this.paced && !Native.pace(PACE_MARGIN_S)) return;
