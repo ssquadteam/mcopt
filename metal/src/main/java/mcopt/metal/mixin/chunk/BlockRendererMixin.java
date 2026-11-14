@@ -30,8 +30,9 @@ import org.spongepowered.asm.mixin.Unique;
  * this::bufferDefaultModel) for every block it meshes; on the Neo they were 58% of the mesher threads' allocation (~190 MB per
  * full rebuild of the fixture scene). The same references, made once per renderer, are passed instead: they call the same methods
  * on the same object, so the emitted quads are the same. The rest of the method is the original, line for line.
+ * Priority 900 so other mods (Polytone) can still inject into the overwritten method.
  */
-@Mixin(value = BlockRenderer.class, remap = false)
+@Mixin(value = BlockRenderer.class, remap = false, priority = 900)
 abstract class BlockRendererMixin extends AbstractBlockRenderContext {
 	@Shadow @Final private ColorProviderRegistry colorProviderRegistry;
 	@Shadow @Final private Vector3f posOffset;
