@@ -13,6 +13,9 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import mcopt.metal.mixin.render.ParticleStorageAccess;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Method;
 import org.joml.Quaternionf;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -116,13 +119,34 @@ public final class Particles {
 	private static final int CHUNK = 2048; // particles per push
 	private static final int QUAD_BYTES = 4 * 28;
 	private static long scratch;
+	private static final MethodHandle TRY_OF = writerMethod("tryOf", 1);
+	private static final MethodHandle PUSH = writerMethod("push", 4);
+
+	/** Sodium 0.9.3 prefixed its writer methods with sodium$, so either name is accepted. */
+	private static MethodHandle writerMethod(String name, int params) {
+		for (Method m : VertexBufferWriter.class.getMethods()) {
+			if ((m.getName().equals(name) || m.getName().equals("sodium$" + name)) && m.getParameterCount() == params) {
+				try {
+					return MethodHandles.publicLookup().unreflect(m);
+				} catch (IllegalAccessException ignored) {
+				}
+			}
+		}
+		return null;
+	}
 
 	/** Writes the layer's quads; false when the builder can't take raw vertices (the caller then builds them as usual). */
 	public static boolean write(ParticleStorageAccess storage, VertexConsumer builder) {
 		int count = storage.mcopt$count();
 		if (count == 0) return true;
-		VertexBufferWriter writer = VertexBufferWriter.tryOf(builder);
-		if (writer == null || !onRenderThread()) return false;
+		if (TRY_OF == null || PUSH == null || !onRenderThread()) return false;
+		VertexBufferWriter writer;
+		try {
+			writer = (VertexBufferWriter) TRY_OF.invoke(builder);
+		} catch (Throwable t) {
+			return false;
+		}
+		if (writer == null) return false;
 		if (scratch == 0) scratch = MemoryUtil.nmemAllocChecked((long) CHUNK * QUAD_BYTES);
 		float[] f = storage.mcopt$floats();
 		int[] in = storage.mcopt$ints();
@@ -162,7 +186,11 @@ public final class Particles {
 					ParticleVertex.put(ptr + 84, x - sxr - sxu, y - syr - syu, z - szr - szu, u0, v1, color, light);
 					ptr += QUAD_BYTES;
 				}
-				writer.push(stack, scratch, (end - start) * 4, ParticleVertex.FORMAT);
+				try {
+					PUSH.invoke(writer, stack, scratch, (end - start) * 4, ParticleVertex.FORMAT);
+				} catch (Throwable t) {
+					throw new IllegalStateException(t);
+				}
 			}
 		}
 		return true;
