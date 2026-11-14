@@ -1331,6 +1331,7 @@ typedef struct MbSet {
 	_Atomic int state[MB_MAX];
 	id<MTLTexture> scratch;  // zero-copy: drawn into when no surface is free (that frame isn't shown)
 	int drawing, next;       // zero-copy: the surface the current frame draws into (-1: scratch), where the next search starts
+	int flipped;             // rows bottom first (zero-copy: the game's own texture), so the layer shows it upside down
 } MbSet;
 static CALayer *mbLayer;
 static CAMetalLayer *mbParent;
@@ -1414,7 +1415,12 @@ static void mbShow(MbSet *s, int slot, uint64_t seq) {
 		[CATransaction begin];
 		[CATransaction setDisableActions:YES];
 		CGRect bounds = mbParent.bounds;
-		if (!CGRectEqualToRect(mbLayer.frame, bounds)) mbLayer.frame = bounds;
+		if (!CGRectEqualToRect(mbLayer.bounds, bounds)) {
+			mbLayer.bounds = bounds;
+			mbLayer.position = CGPointMake(CGRectGetMidX(bounds), CGRectGetMidY(bounds));
+		}
+		CGAffineTransform flip = s->flipped ? CGAffineTransformMakeScale(1, -1) : CGAffineTransformIdentity;
+		if (!CGAffineTransformEqualToTransform(mbLayer.affineTransform, flip)) mbLayer.affineTransform = flip;
 		mbLayer.contents = (id) s->surf[slot];
 		mbLayer.hidden = NO;
 		[CATransaction commit];
@@ -1588,6 +1594,7 @@ MbSet *mc_zc_new(Ctx *ctx, int w, int h) {
 		mbDestroy(s);
 		return NULL;
 	}
+	s->flipped = 1;
 	s->drawing = zcPick(s);
 	return s;
 }
