@@ -329,10 +329,6 @@ id<MTLTexture> mc_texture_buffer(Ctx *ctx, id<MTLBuffer> buffer, int format, uin
 	}
 }
 
-uint64_t mc_texture_buffer_alignment(Ctx *ctx, int format) {
-	return [ctx->device minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat) format];
-}
-
 id<MTLSamplerState> mc_sampler_new(Ctx *ctx, int addressU, int addressV, int minFilter, int magFilter, int mipFilter, int anisotropy, float maxLod) {
 	@autoreleasepool {
 		MTLSamplerDescriptor *d = [[MTLSamplerDescriptor new] autorelease];
@@ -665,7 +661,6 @@ void mc_cadence_present(id<CAMetalDrawable> drawable, int slot) {
 uint64_t mc_cadence_handler(int slot) { return __atomic_load_n(&cadenceHandler[slot], __ATOMIC_ACQUIRE); }
 uint64_t mc_cadence_presented(int slot) { return __atomic_load_n(&cadencePresented[slot], __ATOMIC_ACQUIRE); }
 
-
 // ---- profiling: GPU timestamps at every render encoder's stage boundaries, for one submit at a time ----
 
 static MTLTimestamp profileCpu0, profileGpu0;
@@ -740,10 +735,6 @@ void mc_blit_texture_to_buffer(Enc *enc, id<MTLTexture> src, int mip, int x, int
 void mc_blit_texture_to_texture(Enc *enc, id<MTLTexture> src, id<MTLTexture> dst, int mip, int dx, int dy, int sx, int sy, int w, int h) {
 	[blit(enc) copyFromTexture:src sourceSlice:0 sourceLevel:mip sourceOrigin:MTLOriginMake(sx, sy, 0) sourceSize:MTLSizeMake(w, h, 1)
 		toTexture:dst destinationSlice:0 destinationLevel:mip destinationOrigin:MTLOriginMake(dx, dy, 0)];
-}
-
-void mc_generate_mipmaps(Enc *enc, id<MTLTexture> texture) {
-	[blit(enc) generateMipmapsForTexture:texture];
 }
 
 static int sameTargets(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears, id<MTLTexture> depth) {
@@ -953,11 +944,6 @@ id<MTLComputeCommandEncoder> mc_render_suspend(Enc *enc) {
 	}
 }
 
-void mc_render_end(Enc *enc) {
-	endRender(enc);
-	endBlit(enc);
-}
-
 void mc_render_resume(Enc *enc, id<MTLComputeCommandEncoder> compute) {
 	[compute endEncoding];
 	[compute release];
@@ -1092,14 +1078,6 @@ void mc_r_draw_indirect(Enc *enc, id<MTLBuffer> buffer, uint64_t offset, int dra
 		[enc->render drawPrimitives:enc->primitive indirectBuffer:buffer indirectBufferOffset:offset + (uint64_t) i * 16];
 	}
 }
-
-void mc_r_debug_push(Enc *enc, const char *label) {
-	@autoreleasepool {
-		[enc->render pushDebugGroup:[NSString stringWithUTF8String:label]];
-	}
-}
-
-void mc_r_debug_pop(Enc *enc) { [enc->render popDebugGroup]; }
 
 // Clears part of a color and/or depth texture by drawing a scissored full-screen triangle (Metal can only clear whole attachments).
 // depth < 0 leaves the depth texture untouched.

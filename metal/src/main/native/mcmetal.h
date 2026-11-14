@@ -19,7 +19,7 @@ typedef struct {
 	Ctx *ctx;
 	id<MTLCommandBuffer> cmd;
 	id<MTLBlitCommandEncoder> blit;
-	// Stays open after mc_render_end: if the next pass draws to the same attachments without clearing, it continues in this
+	// Stays open after a pass ends: if the next pass draws to the same attachments without clearing, it continues in this
 	// encoder, which on a tile GPU saves a full store + load of every attachment. Anything else encoded ends it first.
 	id<MTLRenderCommandEncoder> render;
 	id<MTLTexture> colors[MAX_COLORS];  // attachments of `render`, compared by identity only

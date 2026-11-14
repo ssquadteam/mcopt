@@ -34,7 +34,6 @@ final class Native {
 	private static final MethodHandle TEXTURE_NEW = fn("mc_texture_new", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle TEXTURE_VIEW = fn("mc_texture_view", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
 	private static final MethodHandle TEXTURE_BUFFER = fn("mc_texture_buffer", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle TEXTURE_BUFFER_ALIGNMENT = fn("mc_texture_buffer_alignment", true, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle SAMPLER_NEW = fn("mc_sampler_new", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_FLOAT);
 	private static final MethodHandle LIBRARY_NEW = fn("mc_library_new", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PIPELINE_NEW = fn("mc_pipeline_new", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -65,7 +64,6 @@ final class Native {
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle BLIT_TEXTURE_TO_BUFFER = fn("mc_blit_texture_to_buffer", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle GENERATE_MIPMAPS = fn("mc_generate_mipmaps", false, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle BLIT_TEXTURE_TO_TEXTURE = fn("mc_blit_texture_to_texture", false, null,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle RENDER_BEGIN = fn("mc_render_begin", false, JAVA_INT,
@@ -89,7 +87,6 @@ final class Native {
 	private static final MethodHandle OCC_CULL = fn("mc_occ_cull", true, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RENDER_RESUME = fn("mc_render_resume", false, null, JAVA_LONG, JAVA_LONG);
-	private static final MethodHandle RENDER_END = fn("mc_render_end", false, null, JAVA_LONG);
 	private static final MethodHandle CLOUDS_CULL = fn("mc_clouds_cull", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_LONG,
 		JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle R_DRAW = fn("mc_r_draw", true, null, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
@@ -99,9 +96,7 @@ final class Native {
 	private static final MethodHandle R_MULTI_DRAW = fn("mc_r_multi_draw", true, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle R_MULTI_DRAW_SEPARATE = fn("mc_r_multi_draw_separate", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle R_DRAW_INDEXED_INDIRECT = fn("mc_r_draw_indexed_indirect", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle R_DRAW_INDIRECT = fn("mc_r_draw_indirect", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
-	private static final MethodHandle R_DEBUG_PUSH = fn("mc_r_debug_push", false, null, JAVA_LONG, JAVA_LONG);
-	private static final MethodHandle R_DEBUG_POP = fn("mc_r_debug_pop", true, null, JAVA_LONG);
+	private static final MethodHandle R_DRAW_INDIRECT = fn("mc_r_draw_indirect", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);  
 	private static final MethodHandle CLEAR_RECT = fn("mc_clear_rect", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG,
 		JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle LAYER_CONFIGURE = fn("mc_layer_configure", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT);
@@ -160,9 +155,10 @@ final class Native {
 		try (InputStream in = Native.class.getResourceAsStream("/natives/libmcmetal.dylib")) {
 			Path dir = Files.createTempDirectory("mcmetal");
 			Path lib = dir.resolve("libmcmetal.dylib");
+			// deleteOnExit runs in reverse registration order, so the directory goes first and is deleted after the library.
+			dir.toFile().deleteOnExit();
 			Files.copy(in, lib, StandardCopyOption.REPLACE_EXISTING);
 			lib.toFile().deleteOnExit();
-			dir.toFile().deleteOnExit();
 			return lib;
 		} catch (IOException e) {
 			throw new IllegalStateException("can't extract libmcmetal.dylib", e);
@@ -186,7 +182,6 @@ final class Native {
 	static long textureNew(long ctx, int format, int w, int h, int layers, int mips, int usage, int cube) { try { return (long) TEXTURE_NEW.invokeExact(ctx, format, w, h, layers, mips, usage, cube); } catch (Throwable t) { throw rethrow(t); } }
 	static long textureView(long texture, int baseMip, int mips) { try { return (long) TEXTURE_VIEW.invokeExact(texture, baseMip, mips); } catch (Throwable t) { throw rethrow(t); } }
 	static long textureBuffer(long ctx, long buffer, int format, long offset, long length, int texelSize) { try { return (long) TEXTURE_BUFFER.invokeExact(ctx, buffer, format, offset, length, texelSize); } catch (Throwable t) { throw rethrow(t); } }
-	static long textureBufferAlignment(long ctx, int format) { try { return (long) TEXTURE_BUFFER_ALIGNMENT.invokeExact(ctx, format); } catch (Throwable t) { throw rethrow(t); } }
 	static long samplerNew(long ctx, int u, int v, int min, int mag, int mip, int aniso, float maxLod) { try { return (long) SAMPLER_NEW.invokeExact(ctx, u, v, min, mag, mip, aniso, maxLod); } catch (Throwable t) { throw rethrow(t); } }
 	static long libraryNew(long ctx, long source, long err, int errCap) { try { return (long) LIBRARY_NEW.invokeExact(ctx, source, err, errCap); } catch (Throwable t) { throw rethrow(t); } }
 	static long pipelineNew(long ctx, long vlib, long vname, long flib, long fname, long desc, long err, int errCap) { try { return (long) PIPELINE_NEW.invokeExact(ctx, vlib, vname, flib, fname, desc, err, errCap); } catch (Throwable t) { throw rethrow(t); } }
@@ -215,7 +210,6 @@ final class Native {
 	static void fillBuffer(long enc, long buffer, long offset, long length, int value) { try { BLIT_FILL.invokeExact(enc, buffer, offset, length, value); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitBufferToTexture(long enc, long src, long off, int bytesPerRow, int bytesPerImage, long dst, int slice, int mip, int x, int y, int w, int h) { try { BLIT_BUFFER_TO_TEXTURE.invokeExact(enc, src, off, bytesPerRow, bytesPerImage, dst, slice, mip, x, y, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToBuffer(long enc, long src, int mip, int x, int y, int w, int h, long dst, long off, int bytesPerRow) { try { BLIT_TEXTURE_TO_BUFFER.invokeExact(enc, src, mip, x, y, w, h, dst, off, bytesPerRow); } catch (Throwable t) { throw rethrow(t); } }
-	static void generateMipmaps(long enc, long texture) { try { GENERATE_MIPMAPS.invokeExact(enc, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static void blitTextureToTexture(long enc, long src, long dst, int mip, int dx, int dy, int sx, int sy, int w, int h) { try { BLIT_TEXTURE_TO_TEXTURE.invokeExact(enc, src, dst, mip, dx, dy, sx, sy, w, h); } catch (Throwable t) { throw rethrow(t); } }
 	/** 0: opened a new render encoder; 1: continued the open one (same attachments); 2: continued it after clearing depth in place. */
 	static int renderBegin(long enc, int count, long colors, long clears, long depth, int clearDepth, float depthValue, int w, int h) { try { return (int) RENDER_BEGIN.invokeExact(enc, count, colors, clears, depth, clearDepth, depthValue, w, h); } catch (Throwable t) { throw rethrow(t); } }
@@ -248,7 +242,6 @@ final class Native {
 				arenaCount, frame, work, offsets);
 		} catch (Throwable t) { throw rethrow(t); }
 	}
-	static void renderEnd(long enc) { try { RENDER_END.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 	static void renderResume(long enc, long compute) { try { RENDER_RESUME.invokeExact(enc, compute); } catch (Throwable t) { throw rethrow(t); } }
 	static void cloudsCull(long enc, long terrain, long faces, long facesOffset, int count, long modelView, long modelViewOffset, long proj, long projOffset,
 		long info, long infoOffset, long out, long keptOffset) {
@@ -263,9 +256,7 @@ final class Native {
 	static void multiDraw(long enc, long params, int drawCount, int instances, int firstInstance) { try { R_MULTI_DRAW.invokeExact(enc, params, drawCount, instances, firstInstance); } catch (Throwable t) { throw rethrow(t); } }
 	static void multiDrawSeparate(long enc, long firsts, long counts, int drawCount) { try { R_MULTI_DRAW_SEPARATE.invokeExact(enc, firsts, counts, drawCount); } catch (Throwable t) { throw rethrow(t); } }
 	static void drawIndexedIndirect(long enc, long buffer, long offset, int drawCount) { try { R_DRAW_INDEXED_INDIRECT.invokeExact(enc, buffer, offset, drawCount); } catch (Throwable t) { throw rethrow(t); } }
-	static void drawIndirect(long enc, long buffer, long offset, int drawCount) { try { R_DRAW_INDIRECT.invokeExact(enc, buffer, offset, drawCount); } catch (Throwable t) { throw rethrow(t); } }
-	static void debugPush(long enc, long label) { try { R_DEBUG_PUSH.invokeExact(enc, label); } catch (Throwable t) { throw rethrow(t); } }
-	static void debugPop(long enc) { try { R_DEBUG_POP.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
+	static void drawIndirect(long enc, long buffer, long offset, int drawCount) { try { R_DRAW_INDIRECT.invokeExact(enc, buffer, offset, drawCount); } catch (Throwable t) { throw rethrow(t); } }  
 	static void clearRect(long enc, long color, long depth, float r, float g, float b, float a, float depthValue, int x, int y, int w, int h, int mip) { try { CLEAR_RECT.invokeExact(enc, color, depth, r, g, b, a, depthValue, x, y, w, h, mip); } catch (Throwable t) { throw rethrow(t); } }
 	static void layerConfigure(long ctx, long layer, int w, int h, int vsync) { try { LAYER_CONFIGURE.invokeExact(ctx, layer, w, h, vsync); } catch (Throwable t) { throw rethrow(t); } }
 	static long layerNext(long layer) { try { return (long) LAYER_NEXT.invokeExact(layer); } catch (Throwable t) { throw rethrow(t); } }
