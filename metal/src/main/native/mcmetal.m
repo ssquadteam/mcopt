@@ -1692,6 +1692,18 @@ void mc_zc_release(MbSet *s) {
 }
 
 long mc_zc_fallbacks(void) { return atomic_load(&zcFallbacks); }
+
+// Zero-copy took over: the copy's set goes once its last frame is replaced on screen.
+void mc_mailbox_retire(void) {
+	os_unfair_lock_lock(&mbLock);
+	MbSet *old = mbSet;
+	mbSet = NULL;
+	if (old) {
+		old->retired = 1;
+		mbMaybeFree(old);
+	}
+	os_unfair_lock_unlock(&mbLock);
+}
 long mc_mailbox_shown(void) { return atomic_load(&mbShownCount); }
 long mc_mailbox_thinned(void) { return atomic_load(&mbThinned); }
 

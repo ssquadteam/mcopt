@@ -126,6 +126,7 @@ final class Native {
 	private static final MethodHandle ZC_PRESENT = fn("mc_zc_present", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle ZC_RELEASE = fn("mc_zc_release", false, null, JAVA_LONG);
 	private static final MethodHandle ZC_FALLBACKS = fn("mc_zc_fallbacks", false, JAVA_LONG);
+	private static final MethodHandle MAILBOX_RETIRE = fn("mc_mailbox_retire", false, null);
 	/** -Dmcopt.metal.zeroCopy (opt-in, with the mailbox): the main color texture is drawn straight into mailbox surfaces (mc_zc_present). */
 	static final boolean ZERO_COPY = Boolean.getBoolean("mcopt.metal.zeroCopy") && !mcopt.metal.rec.Rec.ON;
 
@@ -287,6 +288,7 @@ final class Native {
 	static long zcPresent(long enc, long set) { try { return (long) ZC_PRESENT.invokeExact(enc, set); } catch (Throwable t) { throw rethrow(t); } }
 	static void zcRelease(long set) { try { ZC_RELEASE.invokeExact(set); } catch (Throwable t) { throw rethrow(t); } }
 	static long zcFallbacks() { try { return (long) ZC_FALLBACKS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static void mailboxRetire() { try { MAILBOX_RETIRE.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static boolean pace(double marginSeconds) { try { return (int) PACE.invokeExact(marginSeconds) != 0; } catch (Throwable t) { throw rethrow(t); } }
 	static int probe(long ctx, long draws, int count, int totalQuads, long globals, long globalsOffset, long atlas, long atlasSampler, int width, int height,
 		int depthCompare, int frontIsClockwise, long bits, long classes, long pixels, long err, int errCap) {
