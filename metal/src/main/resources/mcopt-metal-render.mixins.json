@@ -1,0 +1,10 @@
+{
+	"required": true,
+	"package": "mcopt.metal.mixin.render",
+	"plugin": "mcopt.metal.mixin.render.RenderMixinPlugin",
+	"compatibilityLevel": "JAVA_25",
+	"client": ["ParticleFrameMixin", "ParticleCullMixin", "ParticleLightMixin", "ParticleExtractMixin", "ParticleStorageAccess", "ParticleWriteMixin", "BatchOrderMixin",
+		"GuiItemMixin", "GuiItemFrameMixin", "ItemModelResolverAccess", "ItemConditionalMixin", "ItemSelectMixin", "ItemRangeMixin", "ItemTintMixin",
+		"TextCacheMixin", "TextReloadMixin", "EntityHolderMixin", "EntityExtractMixin", "EntityStateMixin", "PosePoolMixin", "PoseDrainMixin"],
+	"injectors": { "defaultRequire": 1 }
+}

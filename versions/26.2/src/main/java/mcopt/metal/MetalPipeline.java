@@ -36,7 +36,7 @@ import org.slf4j.Logger;
 
 final class MetalPipeline implements CompiledRenderPipeline {
 	private static final Logger LOGGER = LogUtils.getLogger();
-	private static @Nullable GlslCompiler glsl;
+	private static final ThreadLocal<GlslCompiler> GLSL = ThreadLocal.withInitial(GlslCompiler::new);
 	private static final List<String> TERRAIN_SLOTS = List.of("u_Globals", "u_SectionTimeInfo", "u_LightTex", "u_BlockTex");
 
 	final long withDepth;
@@ -120,8 +120,8 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		return new MetalPipeline(encoder, pipeline, 0, 0, 0, 0, 7, List.of(), Map.of());
 	}
 
-	static synchronized MetalPipeline compile(MetalEncoder encoder, RenderPipeline pipeline, ShaderSource source) {
-		if (glsl == null) glsl = new GlslCompiler();
+	/** Thread-safe: precompiles may run on worker threads (-Dmcopt.render.asyncPipelines), each with its own GLSL compiler. */
+	static MetalPipeline compile(MetalEncoder encoder, RenderPipeline pipeline, ShaderSource source) {
 		IntermediaryShaderModule vertex = null, fragment = null;
 		try {
 			vertex = module(source, pipeline, pipeline.getVertexShader(), ShaderType.VERTEX);
@@ -171,13 +171,13 @@ final class MetalPipeline implements CompiledRenderPipeline {
 		if (text == null) text = KNOWN_SOURCES.get(key);
 		if (text == null) throw new ShaderCompileException("Couldn't find source for " + type + " shader " + id);
 		KNOWN_SOURCES.put(key, text);
-		return glsl.createIntermediary(id.toDebugFileName(), GlslPreprocessor.injectDefines(text, pipeline.getShaderDefines()), type);
+		return GLSL.get().createIntermediary(id.toDebugFileName(), GlslPreprocessor.injectDefines(text, pipeline.getShaderDefines()), type);
 	}
 
-	private static final Map<String, String> KNOWN_SOURCES = new HashMap<>();
+	private static final Map<String, String> KNOWN_SOURCES = new java.util.concurrent.ConcurrentHashMap<>();
 	private static @Nullable List<ShaderSource> injected;
 
-	private static @Nullable String injectedSource(Identifier id, ShaderType type) {
+	private static synchronized List<ShaderSource> injectedSources() {
 		if (injected == null) {
 			injected = new ArrayList<>();
 			for (String name : List.of("com.mojang.blaze3d.vulkan.VulkanDevice", "com.mojang.blaze3d.opengl.GlDevice")) {
@@ -192,7 +192,11 @@ final class MetalPipeline implements CompiledRenderPipeline {
 				}
 			}
 		}
-		for (ShaderSource shaderSource : injected) {
+		return injected;
+	}
+
+	private static @Nullable String injectedSource(Identifier id, ShaderType type) {
+		for (ShaderSource shaderSource : injectedSources()) {
 			try {
 				String text = shaderSource.get(id, type);
 				if (text != null) return text;

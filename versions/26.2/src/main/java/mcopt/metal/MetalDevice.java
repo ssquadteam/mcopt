@@ -27,7 +27,13 @@ import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import mcopt.metal.render.RenderFlags;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -39,6 +45,10 @@ final class MetalDevice implements GpuDeviceBackend {
 	private final Allocations allocations;
 	private final ShaderSource shaderSource;
 	private final Map<RenderPipeline, MetalPipeline> pipelines = new IdentityHashMap<>();
+	/** -Dmcopt.render.asyncPipelines: pipelines precompiled on a resource reload, compiling on worker threads (as 26.3 does) until first drawn with. */
+	private final Map<RenderPipeline, FutureTask<MetalPipeline>> pending = new IdentityHashMap<>();
+	private static final CompiledRenderPipeline PENDING = () -> true;
+	private static @Nullable ExecutorService compilers;
 
 	MetalDevice(ShaderSource shaderSource) throws BackendCreationException {
 		this.shaderSource = shaderSource;
@@ -62,7 +72,53 @@ final class MetalDevice implements GpuDeviceBackend {
 	}
 
 	MetalPipeline pipeline(RenderPipeline pipeline) {
-		return this.pipelines.computeIfAbsent(pipeline, p -> MetalPipeline.compile(this.encoder, p, this.shaderSource));
+		MetalPipeline compiled = this.pipelines.get(pipeline);
+		if (compiled != null) return compiled;
+		FutureTask<MetalPipeline> task = this.pending.remove(pipeline);
+		compiled = task != null ? finish(task) : MetalPipeline.compile(this.encoder, pipeline, this.shaderSource);
+		this.pipelines.put(pipeline, compiled);
+		return compiled;
+	}
+
+	/** Runs the task here if no worker has started it, otherwise waits for the worker. */
+	private static MetalPipeline finish(FutureTask<MetalPipeline> task) {
+		task.run();
+		try {
+			return task.get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException(e);
+		} catch (ExecutionException e) {
+			throw e.getCause() instanceof RuntimeException r ? r : new IllegalStateException(e.getCause());
+		}
+	}
+
+	private static synchronized ExecutorService compilers() {
+		if (compilers == null) {
+			AtomicInteger count = new AtomicInteger();
+			int threads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
+			compilers = Executors.newFixedThreadPool(threads, r -> {
+				Thread t = new Thread(r, "mcopt pipeline compiler " + count.incrementAndGet());
+				t.setDaemon(true);
+				return t;
+			});
+		}
+		return compilers;
+	}
+
+	private void dropPending() {
+		for (FutureTask<MetalPipeline> task : this.pending.values()) {
+			if (task.cancel(false)) continue;
+			try {
+				MetalPipeline compiled = task.get();
+				if (compiled != null) compiled.close();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			} catch (ExecutionException ignored) {
+				// it failed, so nothing was made
+			}
+		}
+		this.pending.clear();
 	}
 
 	@Override
@@ -125,12 +181,26 @@ final class MetalDevice implements GpuDeviceBackend {
 	@Override
 	public CompiledRenderPipeline precompilePipeline(RenderPipeline pipeline, @Nullable ShaderSource source) {
 		ShaderSource s = source == null ? this.shaderSource : source;
-		return this.pipelines.computeIfAbsent(pipeline, p -> MetalPipeline.compile(this.encoder, p, s));
+		MetalPipeline compiled = this.pipelines.get(pipeline);
+		if (compiled != null) return compiled;
+		if (RenderFlags.ASYNC_PIPELINES && source != null) {
+			if (!this.pending.containsKey(pipeline)) {
+				FutureTask<MetalPipeline> task = new FutureTask<>(() -> MetalPipeline.compile(this.encoder, pipeline, s));
+				this.pending.put(pipeline, task);
+				compilers().execute(task);
+			}
+			return PENDING;
+		}
+		FutureTask<MetalPipeline> task = this.pending.remove(pipeline);
+		compiled = task != null ? finish(task) : MetalPipeline.compile(this.encoder, pipeline, s);
+		this.pipelines.put(pipeline, compiled);
+		return compiled;
 	}
 
 	@Override
 	public void clearPipelineCache() {
 		this.encoder.waitIdle();
+		this.dropPending();
 		this.pipelines.values().forEach(MetalPipeline::close);
 		this.pipelines.clear();
 	}
@@ -138,6 +208,7 @@ final class MetalDevice implements GpuDeviceBackend {
 	@Override
 	public void close() {
 		this.encoder.waitIdle();
+		this.dropPending();
 	}
 
 	@Override
