@@ -7,8 +7,8 @@ import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
 final class MetalPass extends MetalRenderPass {
-	MetalPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height, @Nullable PassDelegate delegate) {
-		super(encoder, hasDepth, x, y, width, height, delegate);
+	MetalPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height) {
+		super(encoder, hasDepth, x, y, width, height);
 	}
 
 	@Override

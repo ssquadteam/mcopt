@@ -16,7 +16,7 @@ import org.lwjgl.system.MemoryUtil;
 
 /**
  * Split-pass occlusion of Sodium's solid and cutout terrain, which it then draws itself. -Dmcopt.metal.occ=true splits every
- * frame, false never, and by default MetalOccPick measures which of the two is faster here (shader packs: never).
+ * frame, false never, and by default MetalOccPick measures which of the two is faster here.
  * MetalRenderPass records Sodium's per-region multi-draws instead of encoding them; when the pass moves on, flush() splits the
  * recorded ranges into 64-quad chunks and draws the quads that showed last frame (solid's, then cutout's) with one indirect
  * instanced draw of the pipeline's pulled twin (sodium_terrain.vs.metal with PULLED), listed in the pre command buffer so the

@@ -870,7 +870,7 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 			MTLRenderPassColorAttachmentDescriptor *c = rp.colorAttachments[i];
 			c.texture = colors[i];
 			const float *cl = clears + i * 5;
-			// cl[0]: 0 load, 1 clear, 2 don't care (the pass overwrites every pixel; mcopt.metal.pack's full-screen passes).
+			// cl[0]: 0 load, 1 clear, 2 don't care (the pass overwrites every pixel).
 			c.loadAction = cl[0] == 2 ? MTLLoadActionDontCare : cl[0] != 0 ? MTLLoadActionClear : MTLLoadActionLoad;
 			if (c.loadAction == MTLLoadActionLoad && colors[i].storageMode == MTLStorageModeMemoryless) c.loadAction = MTLLoadActionDontCare;
 			c.clearColor = MTLClearColorMake(cl[1], cl[2], cl[3], cl[4]);
