@@ -10,6 +10,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CABase.h>
 #import <QuartzCore/CATransaction.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 #include <mach/mach_time.h>
 #include <sys/event.h>
@@ -1319,6 +1320,7 @@ static MbSet *mbShownSet;          // the set of the surface on screen (mbLock)
 static int mbShownSlot = -1;
 static uint64_t mbSeq, mbShownSeq; // frame order: a late completion never replaces a newer frame
 static int mbEnabled, mbSlots = 4, mbNext, mbLossless = 1, mbThin;
+static int mbContentsOpaque;      // the layer ignores its contents' alpha, so zero-copy frames need no alpha write
 static double mbLastFrame, mbLastCopy, mbInterval;
 static os_unfair_lock mbLock = OS_UNFAIR_LOCK_INIT;
 static _Atomic long mbSkipped, mbShownCount, mbThinned;
@@ -1428,6 +1430,9 @@ void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots, int fla
 			mbParent = layer;
 			mbLayer = [[CALayer alloc] init];
 			mbLayer.opaque = YES;
+			SEL contentsOpaque = sel_getUid("setContentsOpaque:");
+			mbContentsOpaque = [CALayer instancesRespondToSelector:contentsOpaque];
+			if (mbContentsOpaque) ((void (*)(id, SEL, BOOL)) objc_msgSend)(mbLayer, contentsOpaque, YES);
 			mbLayer.contentsGravity = kCAGravityResize;
 			mbLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
 			mbLayer.frame = layer.bounds;
@@ -1644,7 +1649,8 @@ static void zcOpaque(Enc *enc, id<MTLTexture> t) {
 id<MTLTexture> mc_zc_present(Enc *enc, MbSet *s) {
 	int k = s->drawing;
 	if (k >= 0 && mbEnabled) {
-		zcOpaque(enc, s->tex[k]);
+		if (mbContentsOpaque) endRender(enc);
+		else zcOpaque(enc, s->tex[k]);
 		endBlit(enc);
 		atomic_store(&s->state[k], MB_PENDING);
 		uint64_t seq = ++mbSeq;
