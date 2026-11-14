@@ -1146,6 +1146,7 @@ static CGDirectDisplayID windowDisplay(void) {
 }
 
 static void startDisplayLink(void) {
+	if (paceLink) return;
 	paceDisplay = windowDisplay();
 	if (CVDisplayLinkCreateWithCGDisplay(paceDisplay, &paceLink) != kCVReturnSuccess) { paceLink = NULL; return; }
 	CVDisplayLinkSetOutputCallback(paceLink, onRefresh, NULL);
@@ -1272,6 +1273,8 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 // Each frame is drawn into a free IOSurface that becomes the contents of a
 // plain CALayer over the CAMetalLayer once its GPU work completes. A surface is reused only once it was replaced on screen and
 // WindowServer no longer holds it; if none is free the present is skipped. mbShow runs in completion handlers, under mbLock.
+// Surfaces are lossless-compressed BGRA where the GPU supports it: the copy costs ~0.21 ms at 3024x1964 on an M4 against
+// ~0.36 ms into a plain IOSurface and ~0.31 ms into a CAMetalLayer drawable.
 #define MB_MAX 8
 enum { MB_FREE, MB_PENDING, MB_SHOWN };
 typedef struct MbSet {
@@ -1287,9 +1290,28 @@ static MbSet *mbSet;               // the set frames are drawn into now (render 
 static MbSet *mbShownSet;          // the set of the surface on screen (mbLock)
 static int mbShownSlot = -1;
 static uint64_t mbSeq, mbShownSeq; // frame order: a late completion never replaces a newer frame
-static int mbEnabled, mbSlots = 4, mbNext;
+static int mbEnabled, mbSlots = 4, mbNext, mbLossless = 1, mbThin;
+static double mbLastFrame, mbLastCopy, mbInterval;
 static os_unfair_lock mbLock = OS_UNFAIR_LOCK_INIT;
-static _Atomic long mbSkipped, mbShownCount;
+static _Atomic long mbSkipped, mbShownCount, mbThinned;
+
+static IOSurfaceRef mbSurface(int w, int h) {
+	if (mbLossless) {
+		CVPixelBufferRef pb = NULL;
+		NSDictionary *attrs = @{(id) kCVPixelBufferIOSurfacePropertiesKey: @{}, (id) kCVPixelBufferMetalCompatibilityKey: @YES};
+		if (CVPixelBufferCreate(NULL, w, h, kCVPixelFormatType_Lossless_32BGRA, (CFDictionaryRef) attrs, &pb) == kCVReturnSuccess) {
+			IOSurfaceRef s = CVPixelBufferGetIOSurface(pb);
+			if (s) CFRetain(s);
+			CVPixelBufferRelease(pb);
+			if (s) return s;
+		}
+	}
+	NSDictionary *props = @{
+		(id) kIOSurfaceWidth: @(w), (id) kIOSurfaceHeight: @(h), (id) kIOSurfaceBytesPerElement: @4,
+		(id) kIOSurfacePixelFormat: @((uint32_t) 'BGRA'),
+	};
+	return IOSurfaceCreate((CFDictionaryRef) props);
+}
 
 // Frees a replaced set once nothing uses it: not on screen and no frame of it still on the GPU. Under mbLock.
 static void mbMaybeFree(MbSet *s) {
@@ -1307,16 +1329,19 @@ static MbSet *mbAllocate(id<MTLDevice> device, int w, int h) {
 	s->w = w;
 	s->h = h;
 	@autoreleasepool {
-		NSDictionary *props = @{
-			(id) kIOSurfaceWidth: @(w), (id) kIOSurfaceHeight: @(h), (id) kIOSurfaceBytesPerElement: @4,
-			(id) kIOSurfacePixelFormat: @((uint32_t) 'BGRA'),
-		};
 		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
 		d.usage = MTLTextureUsageRenderTarget;
 		d.storageMode = MTLStorageModeShared;
 		for (int i = 0; i < mbSlots; i++) {
-			IOSurfaceRef surf = IOSurfaceCreate((CFDictionaryRef) props);
+			IOSurfaceRef surf = mbSurface(w, h);
 			id<MTLTexture> tex = surf ? [device newTextureWithDescriptor:d iosurface:surf plane:0] : nil;
+			if (!tex && mbLossless) {
+				if (surf) CFRelease(surf);
+				NSLog(@"[mcopt] mailbox: no lossless IOSurface textures, using plain ones");
+				mbLossless = 0;
+				surf = mbSurface(w, h);
+				tex = surf ? [device newTextureWithDescriptor:d iosurface:surf plane:0] : nil;
+			}
 			if (!tex) {
 				if (surf) CFRelease(surf);
 				break;
@@ -1357,7 +1382,8 @@ static void mbShow(MbSet *s, int slot, uint64_t seq) {
 	os_unfair_lock_unlock(&mbLock);
 }
 
-void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots) {
+// flags: bit 0 = lossless surfaces, bit 1 = thin (see mc_mailbox_present).
+void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots, int flags) {
 	@autoreleasepool {
 		os_unfair_lock_lock(&mbLock);
 		if (on && !mbLayer) {
@@ -1383,6 +1409,8 @@ void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots) {
 			if (!mbPipeline) NSLog(@"[mcopt] mailbox: no pipeline: %@", e);
 		}
 		if (slots >= 2 && slots <= MB_MAX) mbSlots = slots;
+		if (!mbSet) mbLossless = flags & 1;
+		mbThin = (flags >> 1) & 1;
 		mbEnabled = on && mbPipeline != nil;
 		if (!mbEnabled && mbLayer) {
 			[CATransaction begin];
@@ -1403,8 +1431,22 @@ void mc_mailbox_enable(Ctx *ctx, CAMetalLayer *layer, int on, int slots) {
 }
 
 // 0 if the frame skips its present.
+// Thin (opt-in): skip the copy when the next frame will still be copied within 3/4 of a refresh of the last copy, so every
+// refresh still gets a new frame, but the frame shown can be up to one more frame interval old.
 int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
 	if (!mbEnabled) return 0;
+	double now = CACurrentMediaTime();
+	if (mbThin) {
+		startDisplayLink();
+		followWindowDisplay();
+		if (mbLastFrame > 0) mbInterval = mbInterval > 0 ? mbInterval + (now - mbLastFrame - mbInterval) * 0.1 : now - mbLastFrame;
+		mbLastFrame = now;
+		double period = refreshPeriod;
+		if (period > 0 && now - nextRefresh < 0.25 && now - mbLastCopy + mbInterval < period * 0.75) {
+			atomic_fetch_add(&mbThinned, 1);
+			return 0;
+		}
+	}
 	endBlit(enc);
 	endRender(enc);
 	Ctx *ctx = enc->ctx;
@@ -1437,6 +1479,7 @@ int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
 		return 0;
 	}
 	mbNext = (k + 1) % s->n;
+	mbLastCopy = now;
 	atomic_store(&s->state[k], MB_PENDING);
 	uint64_t seq = ++mbSeq;
 	@autoreleasepool {
@@ -1461,6 +1504,7 @@ int mc_mailbox_present(Enc *enc, id<MTLTexture> src) {
 
 long mc_mailbox_skipped(void) { return atomic_load(&mbSkipped); }
 long mc_mailbox_shown(void) { return atomic_load(&mbShownCount); }
+long mc_mailbox_thinned(void) { return atomic_load(&mbThinned); }
 
 // ---- present off the frame's command buffer (opt-in: -Dmcopt.metal.presentQueue) ----
 // Idea: ByteV0rtex, noahdunnagan/mcopt#2. mc_present encodes the drawable's draw and presentDrawable into the frame's own

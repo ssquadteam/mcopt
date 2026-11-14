@@ -173,7 +173,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
 			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
 			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : "")
-			+ (MetalSurface.MAILBOX ? String.format(" (mailbox: %d shown, %d skipped so far)", Native.mailboxShown(), Native.mailboxSkipped()) : ""));
+			+ (MetalSurface.MAILBOX ? String.format(" (mailbox: %d shown, %d skipped%s so far)", Native.mailboxShown(), Native.mailboxSkipped(), MetalSurface.MAILBOX_THIN ? ", " + Native.mailboxThinned() + " thinned" : "") : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
 			System.out.printf("mcopt-metal stats: terrain drew %d of %d quads (%.1f%%), %d before the split, %d chunks (%.1f quads each), %d frames drew terrain%n", t[0], t[1],
