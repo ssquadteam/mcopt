@@ -20,7 +20,7 @@ import java.util.TreeMap;
  * </ul>
  * With no profile named anywhere, {@code alpha} applies (the perf-only set); {@code profile=none} applies no profile,
  * exactly the old no-profile behaviour. If config/mcopt.properties is absent it is written with the effective profile ({@code alpha}, or what -Dmcopt.profile names)
- * and comment lines on how to turn it off and how to try far terrain. For {@code alpha} on the small tier (GPU under
+ * and comment lines on how to turn it off. For {@code alpha} on the small tier (GPU under
  * 10 cores, or 8 GB of RAM or less, or either unreadable) the keys in {@link #SMALL_OUT} are left out. It runs first in every mixin config plugin
  * and in the preLaunch entrypoint, before any of our classes read a flag; the first call does the work, later calls
  * return at once.
@@ -146,9 +146,6 @@ public final class Profile {
 			# profile=alpha: measured vanilla performance options (chunk meshing, render lists, startup), the default.
 			# To turn it off:  profile=none
 			profile=%s
-			#
-			# Far terrain (EXPERIMENTAL, off by default; for Macs with 10 or more GPU cores): remove the # below.
-			#mcopt.lod=true
 			""".formatted(name);
 		try {
 			Files.createDirectories(cfg.getParent());

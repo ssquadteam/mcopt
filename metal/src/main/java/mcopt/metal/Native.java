@@ -131,7 +131,7 @@ final class Native {
 	private Native() {
 	}
 
-	/** The loaded libmcmetal, for MetalBridge: the shaderpack runtime binds its own functions (mcpack.m) from the same image. */
+	/** The loaded libmcmetal, for MetalBridge. */
 	static SymbolLookup lookup() {
 		return LIB;
 	}

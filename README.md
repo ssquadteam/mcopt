@@ -23,7 +23,6 @@ To see your fps all the time, press F3 + F6, find fps in the list and set it to 
 
 - The perf profile is on by default and picks its settings for your Mac.
 - `profile=none` in `config/mcopt.properties` turns it off. The first launch writes that file.
-- Far terrain is an experimental opt-in: `mcopt.lod=true` in the same file, for Macs with 10 or more GPU cores (26.3 only).
 - Video Settings has a Metal Renderer page (under mcopt Metal in Sodium's menu) with Render Scale (MetalFX upscaling) and
   Frame Generation (MetalFX frame interpolation). Both switch live and are saved to `config/mcopt.properties`.
 
@@ -39,12 +38,10 @@ fps spinning / flying, same test world, 1920x1080, render distance 16, VSync off
 ## Known issues
 
 - Only Sodium 0.9.2 and 0.9.3 work (0.9.2 on 26.2). With another version, Fabric stops at launch and says which one to install.
-- Far terrain and native worldgen noise are 26.3 only: 26.2's world generator is a different engine.
 - Mods that call OpenGL directly can't draw on the Metal backend. `-Dmcopt.metal=false` switches mcopt's renderer off.
 - Distant Horizons only works on OpenGL. mcopt detects it and stays on OpenGL, so it runs without the Metal renderer's
   speedup; mcopt's other optimizations stay on. (0.2.0-alpha.1 crashed with it instead: add `mcopt.metal=false` to
   `config/mcopt.properties` there.)
-- Far terrain is experimental. On Macs with fewer than 10 GPU cores, it costs most of the fps.
 - With fewer than 10 GPU cores, or 8 GB of memory or less, the profile leaves out the bigger chunk cache.
 - With Lithium, C2ME or ScalableLux installed, some of mcopt's chunk patches step aside on purpose.
 - Lunar Client: supported. Lunar's renderer patches assume OpenGL or Vulkan; mcopt detects Lunar and handles those paths on
@@ -59,9 +56,6 @@ class names; `versions/26.2/remap.properties` maps them to 26.2's before compili
 
 ## Plans
 
-- Far terrain on by default, with tiers for smaller Macs
-- Our own shaders (BSL-level) as an option
-- Faster world generation (native noise, bit-exact)
 - More exact server-tick and chunk optimizations, held for later alphas
 - Faster startup
 - Wider hardware testing

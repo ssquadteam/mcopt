@@ -65,9 +65,6 @@ final class MetalEncoder implements CommandEncoderBackend {
 	/** Render encoders opened in this submit; the trace's #numbers, which the GPU profile lines refer to. */
 	private int encoderIndex;
 	private @Nullable MetalRenderPass currentPass;
-	private long[] passColors = new long[0];
-	private long passDepth;
-	private int passWidth, passHeight;
 	/** Recording the current submit's terrain draws for the visibility probe (-Dmcopt.metal.probe=N); null otherwise. */
 	@Nullable MetalProbe probe;
 	/** Summed GPU µs over the profiled frames: whole submit, then vertex and fragment per encoder. */
@@ -238,14 +235,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 
 	@Override
 	public RenderPassBackend createRenderPass(RenderPassDescriptor descriptor) {
-		// Shaderpack runtime (-Dmcopt.pack): the pass may draw into the pack's targets instead of its color attachments.
-		MetalHooks.PassRedirector redirector = MetalHooks.redirector;
-		MetalHooks.Redirect redirect = redirector == null ? null : redirector.redirect(descriptor);
-		// A redirect that keeps the pass's attachments only hands its pipelines to the delegate (native shading's lite tier).
-		PassDelegate keptDelegate = redirect != null && redirect.keepsAttachments() ? redirect.delegate() : null;
-		if (keptDelegate != null) redirect = null;
-		List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors = redirect != null ? List.of() : descriptor.colorAttachments();
-		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth = redirect != null && redirect.depth() != 0 ? null : descriptor.depthAttachment();
+		List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors = descriptor.colorAttachments();
+		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth = descriptor.depthAttachment();
 		// Anything sampled inside this pass must have its deferred clear in memory before the pass starts.
 		for (MetalTexture t : List.copyOf(this.pendingClears)) {
 			if (t.isClosed()) this.pendingClears.remove(t);
@@ -287,39 +278,12 @@ final class MetalEncoder implements CommandEncoderBackend {
 			}
 			this.forgetSettledClears();
 			int colorCount = colors.size();
-			if (redirect != null) {
-				colorHandles = stack.nmalloc(8, Math.max(1, redirect.colors().length) * 8);
-				clears = stack.ncalloc(4, Math.max(1, redirect.colors().length) * 5, 4);
-				for (int i = 0; i < redirect.colors().length; i++) {
-					MemoryUtil.memPutAddress(colorHandles + i * 8L, redirect.colors()[i]);
-					float[] c = redirect.clears() == null ? null : redirect.clears()[i];
-					if (c != null && c.length == 0) MemoryUtil.memPutFloat(clears + i * 20L, 2); // MetalBridge.DONT_CARE: not loaded
-					else if (c != null) putClear(clears + i * 20L, new org.joml.Vector4f(c[0], c[1], c[2], c[3]));
-				}
-				colorCount = redirect.colors().length;
-				width = redirect.width();
-				height = redirect.height();
-				if (redirect.depth() != 0) {
-					depthHandle = redirect.depth();
-					clearDepth = !Float.isNaN(redirect.depthClear());
-					depthValue = clearDepth ? redirect.depthClear() : 0;
-				}
-			}
 			if (mcopt.metal.cpu.Cpu.PASS_AB) { // opt-in A/B: lever on odd frames
 				Native.cpuFlags(mcopt.metal.cpu.Cpu.nativeFlags((mcopt.metal.cpu.Ab.frame & 1) == 1));
 				mcopt.metal.cpu.Cpu.PASS_TIMER.begin();
 			}
 			int continued = Native.renderBegin(this.enc, colorCount, colorHandles, clears, depthHandle, clearDepth ? 1 : 0, (float) depthValue, width, height);
-			this.passColors = new long[colorCount];
-			for (int i = 0; i < colorCount; i++) this.passColors[i] = MemoryUtil.memGetAddress(colorHandles + i * 8L);
-			this.passDepth = depthHandle;
-			this.passWidth = width;
-			this.passHeight = height;
 			if (mcopt.metal.cpu.Cpu.PASS_AB) mcopt.metal.cpu.Cpu.PASS_TIMER.end();
-			if (redirect != null) redirect.delegate().begin(this.enc, depthHandle != 0);
-			if (keptDelegate != null) keptDelegate.begin(this.enc, depthHandle != 0);
-			MetalHooks.Labeler labeler = MetalHooks.labeler;
-			if (labeler != null && continued == 0) labeler.label(this.enc, "game " + descriptor.label().get());
 			if (this.submitIndex == TRACE_SUBMIT) {
 				StringBuilder targets = new StringBuilder();
 				for (int i = 0; i < colors.size(); i++) {
@@ -333,32 +297,10 @@ final class MetalEncoder implements CommandEncoderBackend {
 			if (continued == 0) this.encoderIndex++;
 		}
 		var area = Versioned.renderArea(descriptor);
-		if (redirect != null && redirect.depth() != 0) {
-			this.currentPass = new MetalPass(this, true, 0, 0, redirect.width(), redirect.height(), redirect.delegate());
-			return this.currentPass;
-		}
-		this.currentPass = new MetalPass(this, depth != null, area.x(), area.y(), area.width(), area.height(),
-			redirect != null ? redirect.delegate() : keptDelegate);
+		this.currentPass = new MetalPass(this, depth != null, area.x(), area.y(), area.width(), area.height());
 		return this.currentPass;
 	}
 
-	boolean splitPass(java.util.function.Supplier<long @Nullable []> work) {
-		MetalRenderPass pass = this.currentPass;
-		if (pass == null) return false;
-		long[] colors = this.passColors;
-		long depth = this.passDepth;
-		int width = this.passWidth, height = this.passHeight;
-		Native.renderEnd(this.enc);
-		long[] replaced = work.get();
-		if (replaced != null) colors = replaced;
-		MetalBridge.renderBegin(this.enc, colors, null, depth, false, 0, width, height);
-		this.passColors = colors;
-		this.passDepth = depth;
-		this.passWidth = width;
-		this.passHeight = height;
-		pass.resumeAfterSplit();
-		return true;
-	}
 
 	private boolean isAttachment(MetalTexture t, List<RenderPassDescriptor.@Nullable Attachment<Optional<Vector4fc>>> colors,
 		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth) {
@@ -386,24 +328,6 @@ final class MetalEncoder implements CommandEncoderBackend {
 		this.currentPass.end();
 		this.trace("  end, draws:", this.currentPass.draws, "triangles:", this.currentPass.indices / 3);
 		this.currentPass = null;
-	}
-
-	boolean inRenderPass() {
-		return this.currentPass != null;
-	}
-
-	/** Far terrain (mcopt.metal.lod): the open pass's pipeline state again after its own draw; false when no pass is open. */
-	boolean reapplyPipeline() {
-		if (this.currentPass == null) return false;
-		this.currentPass.reapplyPipeline();
-		return true;
-	}
-
-	/** Forgets a pending clear of t: something is about to overwrite all of it (the shaderpack's final pass). */
-	void dropPendingClear(MetalTexture t) {
-		t.pendingColorClear = null;
-		t.pendingDepthClear = Double.NaN;
-		this.pendingClears.remove(t);
 	}
 
 	/** Writes a deferred clear to memory with an empty pass: needed when the texture is read before it is drawn to. */

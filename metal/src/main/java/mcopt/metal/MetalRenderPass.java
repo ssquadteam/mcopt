@@ -43,7 +43,6 @@ abstract class MetalRenderPass implements RenderPassBackend {
 	private @Nullable MetalPipeline recording;
 	/** The frontend's index buffer, restored after MetalTerrain draws with its own. */
 	private long indexHandle;
-	private @Nullable GpuBuffer indexBuffer;
 	private int indexInt;
 	/** What the frontend set in the encoder besides uniforms, for MetalTerrain.OCC to put back after it splits the pass. */
 	private final int[] scissor = new int[4];
@@ -52,16 +51,10 @@ abstract class MetalRenderPass implements RenderPassBackend {
 	private int pushConstantsLength;
 
 	private final boolean hasDepth;
-	/** Shaderpack runtime: draws this pass's pipelines with its own (see MetalHooks); null on the backend's own path. */
-	private final @Nullable PassDelegate delegate;
-	/** With a delegate: the current pipeline's uniform slots (index -> slot, -1 unbound); null drops its draws. */
-	private int @Nullable [] slots;
-
-	MetalRenderPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height, @Nullable PassDelegate delegate) {
+	MetalRenderPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height) {
 		this.encoder = encoder;
 		this.enc = encoder.enc;
 		this.hasDepth = hasDepth;
-		this.delegate = delegate;
 		this.areaX = x;
 		this.areaY = y;
 		this.areaWidth = width;
@@ -83,14 +76,6 @@ abstract class MetalRenderPass implements RenderPassBackend {
 			this.pipeline = null;
 			return;
 		}
-		if (this.delegate != null) {
-			this.pipeline = p;
-			this.slots = this.delegate.setPipeline(this.enc, p, p.uniforms);
-			Arrays.fill(this.pending, 0, p.slots.size(), null);
-			Arrays.fill(this.bound, null);
-			this.dirtyUpTo = p.slots.size();
-			return;
-		}
 		boolean terrain = p.pulled != 0 && this.hasDepth, record = terrain && this.encoder.terrain.split;
 		if (terrain) this.encoder.terrain.terrainPixels = (long) this.areaWidth * this.areaHeight;
 		this.flushTerrain(record);
@@ -102,44 +87,9 @@ abstract class MetalRenderPass implements RenderPassBackend {
 		this.dirtyUpTo = p.slots.size();
 	}
 
-	/**
-	 * Far terrain (mcopt.metal.lod, -Dmcopt.lod) encoded its own draw into this pass and left its pipeline state behind: set the
-	 * current pipeline's state again (the game's next draw may come without a setPipeline). Its own resources sit in slots no
-	 * pipeline here binds, so the uniforms stay as they are.
-	 */
-	void reapplyPipeline() {
-		MetalPipeline p = this.pipeline;
-		if (p == null) return;
-		if (this.delegate != null) {
-			this.slots = this.delegate.setPipeline(this.enc, p, p.uniforms);
-			return;
-		}
-		Native.pipeline(this.enc, this.hasDepth ? p.withDepth : p.withoutDepth, p.depthState, p.cull ? 1 : 0, p.wireframe ? 1 : 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
-	}
-
-	void resumeAfterSplit() {
-		MetalPipeline p = this.pipeline;
-		if (p == null) return;
-		if (this.delegate != null) {
-			this.delegate.begin(this.enc, this.hasDepth);
-			this.slots = this.delegate.setPipeline(this.enc, p, p.uniforms);
-		} else {
-			Native.pipeline(this.enc, this.hasDepth ? p.withDepth : p.withoutDepth, p.depthState, p.cull ? 1 : 0, p.wireframe ? 1 : 0, p.depthBiasConstant, p.depthBiasSlope, p.primitive);
-		}
-		if (this.indexHandle != 0) Native.index(this.enc, this.indexHandle, this.indexInt);
-		this.rebind();
-	}
-
 	/** Called by the encoder when the frontend ends the pass. */
 	void end() {
 		this.flushTerrain(false);
-		if (this.delegate != null) this.delegate.end(this.enc);
-	}
-
-	/** With a delegate: false when this draw must not be encoded (pipeline not taken over, or the delegate says so). */
-	private boolean delegated() {
-		if (this.pipeline == null) return false;
-		return this.delegate == null || this.slots != null && this.delegate.beforeDraw(this.enc);
 	}
 
 	/**
@@ -204,8 +154,7 @@ abstract class MetalRenderPass implements RenderPassBackend {
 			return;
 		}
 		Native.bytes(this.enc, MetalConst.PUSH_CONSTANTS_INDEX, address, length);
-		if (this.delegate != null) this.delegate.pushConstants(address, length);
-		if ((MetalTerrain.OCC || this.delegate != null) && length <= this.pushConstants.length) {
+		if (MetalTerrain.OCC && length <= this.pushConstants.length) {
 			this.pushConstantsLength = length;
 			MemoryUtil.memByteBuffer(address, length).get(0, this.pushConstants, 0, length);
 		}
@@ -237,7 +186,6 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void setIndexBuffer(GpuBuffer indexBuffer, IndexType indexType) {
-		this.indexBuffer = indexBuffer;
 		this.indexHandle = this.encoder.use(indexBuffer).handle;
 		this.indexInt = indexType == IndexType.INT ? 1 : 0;
 		Native.index(this.enc, this.indexHandle, this.indexInt);
@@ -259,20 +207,14 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	private void bindUniform(MetalUniform uniform, int index, Object value) {
 		int i = index;
-		if (this.delegate != null) {
-			if (this.slots == null || index >= this.slots.length || this.slots[index] < 0) return;
-			i = this.slots[index];
-		}
 		switch (uniform.kind()) {
 			case UNIFORM_BUFFER -> {
 				GpuBufferSlice slice = (GpuBufferSlice) value;
 				Native.buffer(this.enc, i, this.encoder.use(slice.buffer()).handle, slice.offset());
-				if (this.delegate != null) this.delegate.buffer(uniform.name(), slice);
 			}
 			case SAMPLED_IMAGE -> {
 				MetalUniform.Texture ts = (MetalUniform.Texture) value;
 				Native.texture(this.enc, i, ((MetalTexture.View) ts.view()).handle, ((MetalSampler) ts.sampler()).handle());
-				if (this.delegate != null) this.delegate.texture(this.enc, i, ts.view());
 			}
 			case TEXEL_BUFFER -> {
 				GpuBufferSlice slice = (GpuBufferSlice) value;
@@ -291,7 +233,7 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void drawIndexed(int indexCount, int instanceCount, int firstIndex, int vertexOffset, int firstInstance) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(1);
 		this.indices += (long) indexCount * instanceCount;
 		String name = Objects.requireNonNull(this.pipeline).name;
@@ -320,14 +262,14 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void multiDrawIndexed(IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		Native.multiDrawIndexed(this.enc, MemoryUtil.memAddress(drawParameters), drawCount, instanceCount, firstInstance);
 	}
 
 	@Override
 	public void multiDrawIndexed(PointerBuffer firstIndexOffsets, IntBuffer indexCounts, IntBuffer vertexOffsets, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		if (this.encoder.tracing()) for (int i = 0; i < drawCount; i++) this.indices += indexCounts.get(indexCounts.position() + i);
 		if (this.encoder.probe != null) this.probe(indexCounts, vertexOffsets, drawCount);
@@ -337,10 +279,6 @@ abstract class MetalRenderPass implements RenderPassBackend {
 		}
 		Native.multiDrawIndexedSeparate(this.enc, MemoryUtil.memAddress(firstIndexOffsets), MemoryUtil.memAddress(indexCounts),
 			MemoryUtil.memAddress(vertexOffsets), drawCount);
-		if (this.delegate != null && this.vertexBuffer0 != null && this.indexBuffer != null) {
-			this.delegate.multiDraw(this.vertexBuffer0.buffer(), this.vertexBuffer0.offset(), this.indexBuffer, this.indexInt == 1, MemoryUtil.memAddress(firstIndexOffsets),
-				MemoryUtil.memAddress(indexCounts), MemoryUtil.memAddress(vertexOffsets), drawCount);
-		}
 	}
 
 	/** Hands Sodium's terrain draws to the visibility probe; its compact vertex format is what mcprobe.m decodes. */
@@ -365,14 +303,14 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void drawIndexedIndirect(GpuBufferSlice commands, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		Native.drawIndexedIndirect(this.enc, this.encoder.use(commands.buffer()).handle, commands.offset(), drawCount);
 	}
 
 	@Override
 	public void draw(int vertexCount, int instanceCount, int firstVertex, int firstInstance) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(1);
 		this.indices += (long) vertexCount * instanceCount;
 		Native.draw(this.enc, vertexCount, instanceCount, firstVertex, firstInstance);
@@ -380,21 +318,21 @@ abstract class MetalRenderPass implements RenderPassBackend {
 
 	@Override
 	public void multiDraw(IntBuffer drawParameters, int instanceCount, int firstInstance, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		Native.multiDraw(this.enc, MemoryUtil.memAddress(drawParameters), drawCount, instanceCount, firstInstance);
 	}
 
 	@Override
 	public void multiDraw(IntBuffer firstVertices, IntBuffer vertexCounts, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		Native.multiDrawSeparate(this.enc, MemoryUtil.memAddress(firstVertices), MemoryUtil.memAddress(vertexCounts), drawCount);
 	}
 
 	@Override
 	public void drawIndirect(GpuBufferSlice commands, int drawCount) {
-		if (!this.delegated()) return;
+		if (this.pipeline == null) return;
 		this.bindUniforms(drawCount);
 		Native.drawIndirect(this.enc, this.encoder.use(commands.buffer()).handle, commands.offset(), drawCount);
 	}

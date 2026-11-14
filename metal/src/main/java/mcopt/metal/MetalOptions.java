@@ -71,9 +71,6 @@ public final class MetalOptions implements ConfigEntryPoint {
 						.setBinding(f -> {
 							FrameGen.setMode(f.mode);
 							Profile.save("mcopt.metal.framegen", f.mode);
-						}, () -> FrameGeneration.of(FrameGen.mode())))))
-			.addPage(builder.createExternalPage()
-				.setName(Component.translatable("mcopt.pack.page"))
-				.setScreenConsumer(parent -> net.minecraft.client.Minecraft.getInstance().gui.setScreen(new mcopt.metal.shaderpack.render.ShaderPackScreen(parent))));
+						}, () -> FrameGeneration.of(FrameGen.mode())))));
 	}
 }

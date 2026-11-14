@@ -10,13 +10,12 @@ import com.mojang.blaze3d.textures.GpuTextureView;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
-import org.jspecify.annotations.Nullable;
 
 final class MetalPass extends MetalRenderPass {
 	private final Map<String, Object> values = new HashMap<>();
 
-	MetalPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height, @Nullable PassDelegate delegate) {
-		super(encoder, hasDepth, x, y, width, height, delegate);
+	MetalPass(MetalEncoder encoder, boolean hasDepth, int x, int y, int width, int height) {
+		super(encoder, hasDepth, x, y, width, height);
 	}
 
 	@Override

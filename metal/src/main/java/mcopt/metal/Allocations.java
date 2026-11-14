@@ -44,7 +44,6 @@ final class Allocations {
 		// MTLTextureUsage: ShaderRead 1, RenderTarget 4. Copies need no usage bit in Metal.
 		int mtlUsage = ((usage & GpuTexture.USAGE_TEXTURE_BINDING) != 0 ? 1 : 0) | ((usage & GpuTexture.USAGE_RENDER_ATTACHMENT) != 0 ? 4 : 0);
 		// Split-pass occlusion builds its hi-Z from the main pass's depth.
-		// Shaderpacks sample the game's depth (depthtex0) too.
 		if (MetalTerrain.OCC && format == GpuFormat.D32_FLOAT) mtlUsage |= 1;
 		boolean cube = (usage & GpuTexture.USAGE_CUBEMAP_COMPATIBLE) != 0;
 		long handle = Native.textureNew(this.ctx, MetalConst.pixelFormat(format), width, height, layers, mips, Math.max(1, mtlUsage), cube ? 1 : 0);
