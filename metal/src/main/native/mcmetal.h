@@ -55,6 +55,7 @@ typedef struct {
 	id<MTLCommandBuffer> cpuNext;
 	dispatch_semaphore_t cpuNextReady;
 	int cpuNextPending;
+	unsigned zcMask;  // color attachments of `render` that are zero-copy surfaces (BGRA where the game's pipelines say RGBA)
 } Enc;
 
 id<MTLCommandBuffer> mc_pre(Enc *enc);

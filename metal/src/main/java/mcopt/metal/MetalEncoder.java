@@ -1,5 +1,6 @@
 package mcopt.metal;
 
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.buffers.TransientMemory;
@@ -170,7 +171,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
 			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
 			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : "")
-			+ (MetalSurface.MAILBOX ? String.format(" (mailbox: %d shown, %d skipped%s so far)", Native.mailboxShown(), Native.mailboxSkipped(), MetalSurface.MAILBOX_THIN ? ", " + Native.mailboxThinned() + " thinned" : "") : ""));
+			+ (MetalSurface.MAILBOX ? String.format(" (mailbox: %d shown, %d skipped%s%s so far)", Native.mailboxShown(), Native.mailboxSkipped(), MetalSurface.MAILBOX_THIN ? ", " + Native.mailboxThinned() + " thinned" : "", Native.ZERO_COPY ? ", zero-copy " + (this.zeroCopy.isEmpty() ? "idle" : "on") + ", " + Native.zcFallbacks() + " extra alpha passes" : "") : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
 			System.out.printf("mcopt-metal stats: terrain drew %d of %d quads (%.1f%%), %d before the split, %d chunks (%.1f quads each), %d frames drew terrain%n", t[0], t[1],
@@ -492,9 +493,27 @@ final class MetalEncoder implements CommandEncoderBackend {
 	public void copyTextureToBuffer(GpuTexture source, GpuBuffer destination, long offset, Runnable callback, int mip, int x, int y, int width, int height) {
 		this.trace("copyTextureToBuffer", source, width + "x" + height);
 		this.flushClear(source);
-		Native.blitTextureToBuffer(this.enc, ((MetalTexture) source).handle, mip, x, y, width, height, this.use(destination).handle, offset,
+		MetalBuffer target = this.use(destination);
+		Native.blitTextureToBuffer(this.enc, ((MetalTexture) source).handle, mip, x, y, width, height, target.handle, offset,
 			width * source.getFormat().blockSize());
+		if (((MetalTexture) source).zcSet != 0 && source.getFormat().blockSize() == 4) {
+			// zero-copy surfaces are BGRA: give the reader the RGBA bytes it asked for
+			long pixels = (long) width * height;
+			this.afterGpuFinishes(() -> {
+				if (target.address != 0) swapRedBlue(target.address + offset, pixels);
+				callback.run();
+			});
+			return;
+		}
 		this.afterGpuFinishes(callback);
+	}
+
+	private static void swapRedBlue(long address, long pixels) {
+		for (long p = address, end = address + pixels * 4; p < end; p += 4) {
+			byte r = MemoryUtil.memGetByte(p);
+			MemoryUtil.memPutByte(p, MemoryUtil.memGetByte(p + 2));
+			MemoryUtil.memPutByte(p + 2, r);
+		}
 	}
 
 	@Override
@@ -511,6 +530,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 		boolean reset) {
 		if (this.currentPass != null) throw new IllegalStateException("Cannot upscale inside a render pass");
 		this.trace("upscale", color, "->", dst, reset ? "(reset)" : "");
+		this.demoteZeroCopy(dst);
 		this.flushClear(color);
 		this.flushClear(depth);
 		dst.pendingColorClear = null;
@@ -566,6 +586,64 @@ final class MetalEncoder implements CommandEncoderBackend {
 		} finally {
 			MetalEvents.end(event);
 		}
+	}
+
+	private final List<MetalTexture> zeroCopy = new ArrayList<>(1);
+	private boolean zeroCopyFailed;
+
+	/**
+	 * -Dmcopt.metal.zeroCopy, vsync off: the presented texture is drawn straight into mailbox surfaces (mc_zc_present). Its first
+	 * present goes through the copy and moves it onto a surface set; from the next frame on it draws into the surfaces. False
+	 * when view's texture can't go this way: the caller presents it with the copy.
+	 */
+	boolean presentZeroCopy(GpuTextureView view) {
+		MetalTexture t = MetalTexture.of(view);
+		if (t.zcSet == 0) {
+			if (this.zeroCopyFailed || t.getFormat() != GpuFormat.RGBA8_UNORM || t.getMipLevels() != 1 || t.getDepthOrLayers() != 1
+				|| (t.usage() & GpuTexture.USAGE_RENDER_ATTACHMENT) == 0 || MetalFx.scale() < 1) return false;
+			this.presentMailbox(view);
+			long set = Native.zcNew(this.ctx, t.getWidth(0), t.getHeight(0));
+			if (set == 0) {
+				this.zeroCopyFailed = true;
+				System.out.println("[mcopt] zero-copy: no surfaces for " + t.getWidth(0) + "x" + t.getHeight(0) + ", staying on the copy");
+				return true;
+			}
+			this.releaseLater(t.handle);
+			t.zcSet = set;
+			t.rehandle(Native.zcCurrent(set));
+			this.zeroCopy.add(t);
+			return true;
+		}
+		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
+		try {
+			this.trace("present (zero-copy)", view);
+			this.flushClear(t);
+			t.rehandle(Native.zcPresent(this.enc, t.zcSet));
+			this.statPresents++;
+		} finally {
+			MetalEvents.end(event);
+		}
+		return true;
+	}
+
+	/** Back onto a private texture of its own format (the mailbox is off, or MetalFX writes into it). */
+	void demoteZeroCopy(MetalTexture t) {
+		if (t.zcSet == 0) return;
+		long handle = Native.textureNew(this.ctx, MetalConst.pixelFormat(t.getFormat()), t.getWidth(0), t.getHeight(0), 1, 1, 5, 0);
+		if (handle == 0) throw new IllegalStateException("Couldn't create " + t.getWidth(0) + "x" + t.getHeight(0) + " texture " + t.getLabel());
+		this.releaseZeroCopy(t);
+		t.rehandle(handle);
+	}
+
+	void demoteAllZeroCopy() {
+		for (MetalTexture t : List.copyOf(this.zeroCopy)) this.demoteZeroCopy(t);
+	}
+
+	void releaseZeroCopy(MetalTexture t) {
+		long set = t.zcSet;
+		t.zcSet = 0;
+		this.zeroCopy.remove(t);
+		this.afterGpuFinishes(() -> Native.zcRelease(set));
 	}
 
 	void presentMailbox(GpuTextureView view) {

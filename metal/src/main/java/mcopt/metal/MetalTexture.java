@@ -5,13 +5,19 @@ import com.mojang.renderpearl.api.textures.GpuTexture;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import com.mojang.renderpearl.backend.common.BaseGpuTexture;
 import com.mojang.renderpearl.backend.common.BaseGpuTextureView;
+import java.util.ArrayList;
+import java.util.List;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 
 class MetalTexture extends BaseGpuTexture {
-	final long handle;
+	long handle;
 	private final MetalEncoder encoder;
 	private boolean closed;
+	/** Zero-copy (MetalEncoder.presentZeroCopy): the mailbox surface set handle rotates through, 0 otherwise. */
+	long zcSet;
+	/** Views of the whole texture, which share its handle and follow it when it changes. */
+	private final List<View> wholeViews = new ArrayList<>(1);
 
 	/**
 	 * A clear that hasn't touched memory yet. Tile GPUs pay a full framebuffer write for a standalone clear and another
@@ -24,6 +30,11 @@ class MetalTexture extends BaseGpuTexture {
 		super(usage, label, format, width, height, layers, mips);
 		this.encoder = encoder;
 		this.handle = handle;
+	}
+
+	void rehandle(long handle) {
+		this.handle = handle;
+		for (View v : this.wholeViews) v.handle = handle;
 	}
 
 	boolean hasPendingClear() {
@@ -39,12 +50,13 @@ class MetalTexture extends BaseGpuTexture {
 	public void close() {
 		if (!this.closed) {
 			this.closed = true;
-			this.encoder.releaseLater(this.handle);
+			if (this.zcSet != 0) this.encoder.releaseZeroCopy(this);
+			else this.encoder.releaseLater(this.handle);
 		}
 	}
 
 	static final class View extends BaseGpuTextureView {
-		final long handle;
+		long handle;
 		private final boolean ownsHandle;
 		private final MetalEncoder encoder;
 		private boolean closed;
@@ -55,6 +67,10 @@ class MetalTexture extends BaseGpuTexture {
 			// A view of the whole texture is the texture itself; only sub-ranges need a real MTLTexture view.
 			this.ownsHandle = baseMip != 0 || mips != texture.getMipLevels();
 			this.handle = this.ownsHandle ? Native.textureView(texture.handle, baseMip, mips) : texture.handle;
+			if (!this.ownsHandle) {
+				texture.wholeViews.removeIf(v -> v.closed);
+				texture.wholeViews.add(this);
+			}
 		}
 
 		MetalTexture metalTexture() {
