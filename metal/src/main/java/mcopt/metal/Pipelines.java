@@ -46,7 +46,8 @@ final class Pipelines {
 		"sodium:pipeline/translucent_terrain", "#define ALPHA_CUTOUT 0.01\n");
 
 	/** -Dmcopt.metal.builtinMsl=false compiles Sodium's terrain from its own SPIR-V again, for A/B runs. */
-	private static final boolean BUILTIN_MSL = Boolean.parseBoolean(System.getProperty("mcopt.metal.builtinMsl", "true"));
+	private static final boolean BUILTIN_MSL = Boolean.parseBoolean(System.getProperty("mcopt.metal.builtinMsl",
+		net.fabricmc.loader.api.FabricLoader.getInstance().isModLoaded("iris") ? "false" : "true"));
 	/** -Dmcopt.metal.dumpMsl=DIR writes every pipeline's generated Metal source there, for reading what the GPU actually runs. */
 	private static final @Nullable String DUMP_DIR = System.getProperty("mcopt.metal.dumpMsl");
 	/** -Dmcopt.metal.overrideMsl=DIR uses DIR/NAME.{vs,fs}.metal instead of the generated source when present: shader experiments without a rebuild. */

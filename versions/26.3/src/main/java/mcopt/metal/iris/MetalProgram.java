@@ -7,6 +7,7 @@ import net.irisshaders.iris.pipeline.transform.PatchShaderType;
 import net.irisshaders.iris.pipeline.transform.PatchedShader;
 import net.irisshaders.iris.pipeline.transform.ShaderResourceLayout;
 import net.irisshaders.iris.samplers.ProgramSamplers;
+import net.irisshaders.iris.samplers.SamplerHeapLayout;
 import net.irisshaders.iris.uniforms.buffer.DrawUniforms;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.PointerBuffer;
@@ -116,7 +117,7 @@ final class MetalProgram implements AutoCloseable {
 					buffers += d.count();
 				}
 				case SAMPLER -> {
-					boolean texel = d.type().contains("Buffer");
+					boolean texel = texel(d);
 					int sampler = texel || constexpr.containsKey(d.name()) ? -1 : samplers;
 					slots.add(new Slot(d, texel ? Kind.TEXEL_BUFFER : Kind.TEXTURE, textures, sampler));
 					textures += d.count();
@@ -137,9 +138,22 @@ final class MetalProgram implements AutoCloseable {
 	static int samplerCount(ShaderResourceLayout layout) {
 		int n = 0;
 		for (var d : layout.descriptors()) {
-			if (d.kind() == ShaderResourceLayout.Kind.SAMPLER && !d.type().contains("Buffer")) n += d.count();
+			if (d.kind() == ShaderResourceLayout.Kind.SAMPLER && !texel(d)) n += d.count();
 		}
 		return n;
+	}
+
+	static boolean texel(ShaderResourceLayout.Descriptor d) {
+		try {
+			return SamplerHeapLayout.Type.valueOf(d.type()).texelBuffer();
+		} catch (IllegalArgumentException unknown) {
+			return d.type().toLowerCase(java.util.Locale.ROOT).contains("buffer");
+		}
+	}
+
+	static GlSampler.Description state(GlSampler.Description d, SamplerHeapLayout.Type type) {
+		boolean shadow = type.glsl.endsWith("Shadow");
+		return d.hardwareShadow() == shadow ? d : new GlSampler.Description(d.linear(), d.linearMips(), d.mipmapped(), shadow, d.clamp());
 	}
 
 	static boolean needsConstexpr(ShaderResourceLayout layout) {
@@ -301,7 +315,7 @@ final class MetalProgram implements AutoCloseable {
 					}
 					var resolved = sampler.texture().resolve(sampler.reference().type());
 					long texture = resolved.image() != null ? resolved.image().getView() : MetalApi.texture(resolved.texture());
-					long state = slot.sampler() < 0 ? 0 : resolved.nativeSampler() != null ? MetalApi.sampler(resolved.nativeSampler()) : pack.sampler(resolved.sampler());
+					long state = slot.sampler() < 0 ? 0 : resolved.nativeSampler() != null ? MetalApi.sampler(resolved.nativeSampler()) : pack.sampler(state(resolved.sampler(), sampler.reference().type()));
 					binder.texture(slot.index(), texture, state);
 				}
 				case IMAGE -> {

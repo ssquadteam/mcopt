@@ -48,12 +48,12 @@ final class MetalGraphicsShader implements GraphicsShader {
 		if (!MetalProgram.needsConstexpr(layout)) return Map.of();
 		Map<String, GlSampler.Description> fixed = new HashMap<>();
 		for (var d : layout.descriptors()) {
-			if (d.kind() != ShaderResourceLayout.Kind.SAMPLER || d.type().contains("Buffer")) continue;
+			if (d.kind() != ShaderResourceLayout.Kind.SAMPLER || MetalProgram.texel(d)) continue;
 			var sampler = resources.getSamplers().get(d.name());
 			if (sampler == null || sampler.texture() == null) continue;
 			try {
 				var resolved = sampler.texture().resolve(sampler.reference().type());
-				if (resolved.nativeSampler() == null && resolved.sampler() != null) fixed.put(d.name(), resolved.sampler());
+				if (resolved.nativeSampler() == null && resolved.sampler() != null) fixed.put(d.name(), MetalProgram.state(resolved.sampler(), sampler.reference().type()));
 			} catch (RuntimeException notReady) {
 			}
 		}
