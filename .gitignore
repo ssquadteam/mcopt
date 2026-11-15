@@ -7,3 +7,4 @@ out/
 __pycache__/
 mcopt-pack-cache/
 dist/
+libs/

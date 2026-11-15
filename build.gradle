@@ -50,11 +50,21 @@ subprojects {
 		sourceSets.main.java.srcDir sharedJava
 	}
 	sourceSets.main.resources.srcDir new File(shared, 'resources')
+	def irisJar = rootProject.file("libs/iris-${minecraft_version}.jar")
+	def irisSources = file('src/main/java/mcopt/metal/iris').exists()
+	def iris = irisSources && irisJar.exists()
+	if (iris) {
+		dependencies { compileOnly files(irisJar) }
+	} else if (irisSources) {
+		logger.warn("mcopt ${minecraft_version}: ${irisJar} not found, building without Iris support")
+		sourceSets.main.java.exclude 'mcopt/metal/iris/**'
+		sourceSets.main.resources.exclude 'mcopt-metal-iris.mixins.json'
+	}
 
 	def nativeOut = layout.buildDirectory.dir('natives/natives')
 
 	tasks.register('compileNative', Exec) {
-		def sources = ['mcmetal.m', 'mcterrain.m', 'mcprobe.m', 'mcframegen.m', 'rec.m'].collect { new File(shared, "native/$it") }
+		def sources = ['mcmetal.m', 'mcterrain.m', 'mcprobe.m', 'mcframegen.m', 'rec.m', 'mcapi.m'].collect { new File(shared, "native/$it") }
 		def output = nativeOut.get().file('libmcmetal.dylib').asFile
 		inputs.files sources, new File(shared, 'native/mcmetal.h')
 		outputs.file output
@@ -66,7 +76,7 @@ subprojects {
 	processResources {
 		dependsOn 'compileNative'
 		from(layout.buildDirectory.dir('natives'))
-		def props = [version: version, minecraft_dep: minecraft_dep, sodium_dep: sodium_dep, mixins: mixins.split(',').collect { "${it}.mixins.json" }.join('", "')]
+		def props = [version: version, minecraft_dep: minecraft_dep, sodium_dep: sodium_dep, mixins: mixins.split(',').findAll { iris || it != 'mcopt-metal-iris' }.collect { "${it}.mixins.json" }.join('", "')]
 		inputs.properties props
 		filesMatching('fabric.mod.json') { expand props }
 	}

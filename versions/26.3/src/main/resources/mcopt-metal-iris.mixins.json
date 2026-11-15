@@ -1,0 +1,8 @@
+{
+	"required": false,
+	"package": "mcopt.metal.iris.mixin",
+	"plugin": "mcopt.metal.iris.mixin.IrisMixinPlugin",
+	"compatibilityLevel": "JAVA_25",
+	"client": ["IrisBackendMixin", "GraphicsBackendMixin", "TransformPatcherMixin", "IrisRenderSystemMixin"],
+	"injectors": { "defaultRequire": 1 }
+}

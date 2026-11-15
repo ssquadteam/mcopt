@@ -54,7 +54,11 @@ final class MetalConst {
 			case "D32_FLOAT" -> 252;
 			case "S8_UINT" -> 253;
 			case "D32_FLOAT_S8_UINT", "D24_UNORM_S8_UINT" -> 260; // Apple GPUs have no 24-bit depth
-			default -> throw new IllegalArgumentException("Metal has no texture format for " + format);
+			default -> {
+				Integer registered = MetalApi.registeredFormat(format.name());
+				if (registered == null) throw new IllegalArgumentException("Metal has no texture format for " + format);
+				yield registered;
+			}
 		};
 	}
 

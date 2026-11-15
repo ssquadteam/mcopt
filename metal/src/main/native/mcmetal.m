@@ -422,6 +422,9 @@ id<MTLRenderPipelineState> mc_pipeline_new(Ctx *ctx, id<MTLLibrary> vlib, const 
 			if (desc[i + 2] > 0) {
 				l.stepFunction = MTLVertexStepFunctionPerInstance;
 				l.stepRate = desc[i + 2];
+			} else if (desc[i + 2] < 0) {
+				l.stepFunction = MTLVertexStepFunctionConstant;
+				l.stepRate = 0;
 			}
 		}
 		int attributes = desc[i++];

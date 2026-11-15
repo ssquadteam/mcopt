@@ -77,9 +77,12 @@ final class MetalEncoder implements CommandEncoderBackend {
 	private record Frame(long index, long cmd, List<Runnable> after) {
 	}
 
+	static volatile @Nullable MetalEncoder current;
+
 	MetalEncoder(long ctx) {
 		this.ctx = ctx;
 		this.enc = Native.encNew(ctx);
+		current = this;
 		if (GPU_TIMES) GpuTimes.initialize();
 		this.transientMemory = new MetalTransientMemory(ctx, this);
 		this.terrain = new MetalTerrain(this);

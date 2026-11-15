@@ -45,6 +45,7 @@ final class Allocations {
 		int mtlUsage = ((usage & GpuTexture.USAGE_TEXTURE_BINDING) != 0 ? 1 : 0) | ((usage & GpuTexture.USAGE_RENDER_ATTACHMENT) != 0 ? 4 : 0);
 		// Split-pass occlusion builds its hi-Z from the main pass's depth.
 		if (MetalTerrain.OCC && format == GpuFormat.D32_FLOAT) mtlUsage |= 1;
+		if ((usage & MetalApi.storageUsage()) != 0) mtlUsage |= 3;
 		boolean cube = (usage & GpuTexture.USAGE_CUBEMAP_COMPATIBLE) != 0;
 		long handle = Native.textureNew(this.ctx, MetalConst.pixelFormat(format), width, height, layers, mips, Math.max(1, mtlUsage), cube ? 1 : 0);
 		if (handle == 0) throw new IllegalStateException("Couldn't create " + width + "x" + height + " " + format + " texture " + label);

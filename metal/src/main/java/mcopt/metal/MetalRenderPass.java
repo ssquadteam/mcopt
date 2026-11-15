@@ -87,6 +87,13 @@ abstract class MetalRenderPass implements RenderPassBackend {
 		this.dirtyUpTo = p.slots.size();
 	}
 
+	void forget() {
+		this.setMetalPipeline(null);
+		Arrays.fill(this.pending, null);
+		Arrays.fill(this.bound, null);
+		this.dirtyUpTo = 0;
+	}
+
 	/** Called by the encoder when the frontend ends the pass. */
 	void end() {
 		this.flushTerrain(false);
