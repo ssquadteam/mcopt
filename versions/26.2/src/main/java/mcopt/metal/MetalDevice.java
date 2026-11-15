@@ -28,12 +28,12 @@ import java.util.OptionalDouble;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Executor;
 import java.util.concurrent.FutureTask;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import mcopt.metal.render.RenderFlags;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.util.Util;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -45,10 +45,9 @@ final class MetalDevice implements GpuDeviceBackend {
 	private final Allocations allocations;
 	private final ShaderSource shaderSource;
 	private final Map<RenderPipeline, MetalPipeline> pipelines = new IdentityHashMap<>();
-	/** -Dmcopt.render.asyncPipelines: pipelines precompiled on a resource reload, compiling on worker threads (as 26.3 does) until first drawn with. */
+	/** -Dmcopt.render.asyncPipelines: a reload's static pipelines compile in parallel on the background workers, all finished before the reload ends (as 26.3 does). */
 	private final Map<RenderPipeline, FutureTask<MetalPipeline>> pending = new IdentityHashMap<>();
-	private static final CompiledRenderPipeline PENDING = () -> true;
-	private static @Nullable ExecutorService compilers;
+	private boolean batchQueued;
 
 	MetalDevice(ShaderSource shaderSource) throws BackendCreationException {
 		this.shaderSource = shaderSource;
@@ -93,17 +92,14 @@ final class MetalDevice implements GpuDeviceBackend {
 		}
 	}
 
-	private static synchronized ExecutorService compilers() {
-		if (compilers == null) {
-			AtomicInteger count = new AtomicInteger();
-			int threads = Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
-			compilers = Executors.newFixedThreadPool(threads, r -> {
-				Thread t = new Thread(r, "mcopt pipeline compiler " + count.incrementAndGet());
-				t.setDaemon(true);
-				return t;
-			});
+	private void queue(List<RenderPipeline> list, ShaderSource source) {
+		Executor executor = Util.backgroundExecutor();
+		for (RenderPipeline p : list) {
+			if (this.pipelines.containsKey(p) || this.pending.containsKey(p)) continue;
+			FutureTask<MetalPipeline> task = new FutureTask<>(() -> MetalPipeline.compile(this.encoder, p, source));
+			this.pending.put(p, task);
+			executor.execute(task);
 		}
-		return compilers;
 	}
 
 	private void dropPending() {
@@ -183,13 +179,9 @@ final class MetalDevice implements GpuDeviceBackend {
 		ShaderSource s = source == null ? this.shaderSource : source;
 		MetalPipeline compiled = this.pipelines.get(pipeline);
 		if (compiled != null) return compiled;
-		if (RenderFlags.ASYNC_PIPELINES && source != null) {
-			if (!this.pending.containsKey(pipeline)) {
-				FutureTask<MetalPipeline> task = new FutureTask<>(() -> MetalPipeline.compile(this.encoder, pipeline, s));
-				this.pending.put(pipeline, task);
-				compilers().execute(task);
-			}
-			return PENDING;
+		if (RenderFlags.ASYNC_PIPELINES && source != null && !this.batchQueued) {
+			this.batchQueued = true;
+			this.queue(RenderPipelines.getStaticPipelines(), s);
 		}
 		FutureTask<MetalPipeline> task = this.pending.remove(pipeline);
 		compiled = task != null ? finish(task) : MetalPipeline.compile(this.encoder, pipeline, s);
@@ -201,6 +193,7 @@ final class MetalDevice implements GpuDeviceBackend {
 	public void clearPipelineCache() {
 		this.encoder.waitIdle();
 		this.dropPending();
+		this.batchQueued = false;
 		this.pipelines.values().forEach(MetalPipeline::close);
 		this.pipelines.clear();
 	}
